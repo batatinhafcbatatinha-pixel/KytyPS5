@@ -646,6 +646,28 @@ void BufferCache::ForgetColorMetadataChecks(uint64_t vaddr, uint64_t size) {
 	}
 }
 
+void BufferCache::AdoptGuestMemory(uint64_t vaddr, uint64_t size) {
+	m_gpu_modified_ranges.Subtract(vaddr, size);
+	ForgetColorMetadataChecks(vaddr, size);
+	// Dirty state is tracked per page. A page shared with GPU-written bytes outside the range
+	// keeps them.
+	auto begin = Common::AlignDown(vaddr, TRACKER_PAGE_SIZE);
+	auto end   = Common::AlignUp(vaddr + size, TRACKER_PAGE_SIZE);
+	if (begin < vaddr && m_gpu_modified_ranges.Intersects(begin, TRACKER_PAGE_SIZE)) {
+		begin += TRACKER_PAGE_SIZE;
+	}
+	if (vaddr + size < end && end - begin >= TRACKER_PAGE_SIZE &&
+	    m_gpu_modified_ranges.Intersects(end - TRACKER_PAGE_SIZE, TRACKER_PAGE_SIZE)) {
+		end -= TRACKER_PAGE_SIZE;
+	}
+	if (begin >= end) {
+		return;
+	}
+	m_memory_tracker.UnmarkRegionAsGpuModified(begin, end - begin);
+	m_memory_tracker.MarkRegionAsCpuModified(begin, end - begin);
+	QueueBdaSync(begin, end - begin, true);
+}
+
 bool BufferCache::IsRegionGpuModified(uint64_t vaddr, uint64_t size) {
 	return m_memory_tracker.IsRegionGpuModified(vaddr, size);
 }

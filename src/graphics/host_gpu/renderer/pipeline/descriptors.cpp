@@ -121,9 +121,15 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 	if (size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange) {
 		EXIT("storage buffer range is unsupported\n");
 	}
-	auto [buffer, offset] = context.GetBufferCache().ObtainBuffer(
-	    address, size, resource.written,
-	    resource.formatted || (resource.read && Config::SyncRawImageBuffersEnabled()), id);
+	// A raw read from the base of a GPU-written image, such as a GPU memory copy of a render
+	// target, reads that image like a formatted read does; writes there invalidate it likewise.
+	const bool sync_image =
+	    resource.formatted ||
+	    (resource.read &&
+	     (Config::SyncRawImageBuffersEnabled() ||
+	      (!resource.written && context.GetTextureCache().HasGpuWrittenImageAt(address))));
+	auto [buffer, offset] =
+	    context.GetBufferCache().ObtainBuffer(address, size, resource.written, sync_image, id);
 	const auto aligned_offset = Common::AlignDown(offset, alignment);
 	const auto adjustment     = offset - aligned_offset;
 	const auto max_range      = graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange;

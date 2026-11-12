@@ -72,6 +72,9 @@ public:
 	                                        uint32_t packed_clear);
 	void               InvalidateMemory(uint64_t address, uint64_t size);
 	void               InvalidateMemoryFromGPU(uint64_t address, uint64_t size);
+	// True when a GPU-written image starts at the address, so its newest contents live in the
+	// image rather than in guest memory or a cached buffer.
+	[[nodiscard]] bool HasGpuWrittenImageAt(uint64_t address);
 	// Writes a copy into whole levels of one layer of a GPU-written image straight into it, and
 	// returns false for any other copy.
 	[[nodiscard]] bool CopyToImage(uint64_t address, uint64_t source, uint64_t size);
