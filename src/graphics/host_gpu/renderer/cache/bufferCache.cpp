@@ -301,6 +301,16 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		if (is_write && !IsRegionRegistered(vaddr, size)) {
 			return;
 		}
+		{
+			const auto window = Common::AlignDown(vaddr, DownloadWindowSize);
+			CompleteEagerDownloads(
+			    window, std::max(window + DownloadWindowSize, vaddr + size) - window, false);
+		}
+		// Only small reads, such as faults and descriptor loads, predict later read-backs.
+		if (size <= 16 * TRACKER_PAGE_SIZE && IsRegionGpuModified(vaddr, size)) {
+			const auto page = Common::AlignDown(vaddr, TRACKER_PAGE_SIZE);
+			m_readback_pages.Add(page, Common::AlignUp(vaddr + size, TRACKER_PAGE_SIZE) - page);
+		}
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
 		if (IsRegionGpuModified(vaddr, size)) {
 			const auto start =
@@ -516,6 +526,9 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	if (is_written) {
 		m_gpu_modified_ranges.Add(vaddr, size);
 		ForgetColorMetadataChecks(vaddr, size);
+		m_readback_pages.ForEachInRange(vaddr, size, [this](uint64_t begin, uint64_t end) {
+			m_eager_writes.Add(begin, end - begin);
+		});
 	}
 	return {&buffer, buffer.Offset(vaddr)};
 }
@@ -673,7 +686,96 @@ bool BufferCache::IsRegionGpuModified(uint64_t vaddr, uint64_t size) {
 }
 
 bool BufferCache::HasGpuDirtyBytes(uint64_t vaddr, uint64_t size) {
-	return m_gpu_modified_ranges.Intersects(vaddr, size);
+	return m_gpu_modified_ranges.Intersects(vaddr, size) || HasEagerDownloads(vaddr, size);
+}
+
+bool BufferCache::HasEagerDownloads(uint64_t vaddr, uint64_t size) const {
+	return m_eager_pending.Intersects(vaddr, size);
+}
+
+void BufferCache::RecordEagerDownloads() {
+	if (m_recording_eager || !GuestGpu::IsGpuThread()) {
+		return;
+	}
+	m_recording_eager = true;
+	// Pages whose downloads have landed become readable without a fault.
+	CompleteEagerDownloads(0, UINT64_MAX, true);
+	if (!m_eager_writes.Empty()) {
+		const auto writes = std::exchange(m_eager_writes, {});
+		writes.ForEach([&](uint64_t begin, uint64_t end) {
+			for (auto address = begin; address < end;) {
+				const auto* owner = m_page_table.Find(address >> PageTable::kPageBits);
+				if (owner == nullptr || !*owner) {
+					address = std::min(end, Common::AlignDown(address, CACHING_PAGESIZE) +
+					                            CACHING_PAGESIZE);
+					continue;
+				}
+				auto&      buffer = m_slot_buffers[*owner];
+				const auto last   = std::min(end, buffer.CpuAddress() + buffer.Size());
+				// A stream-buffer wrap may submit: the copy is in the batch current now.
+				if (DownloadBufferMemory<true>(buffer, address, last - address)) {
+					m_eager_downloads.push_back({address, last, m_scheduler.CurrentTick()});
+					m_eager_pending.Add(address, last - address);
+				}
+				address = last;
+			}
+		});
+	}
+	m_recording_eager = false;
+}
+
+void BufferCache::CompleteEagerDownloads(uint64_t vaddr, uint64_t size, bool finished_only) {
+	if (m_eager_downloads.empty()) {
+		return;
+	}
+	const auto end = size > UINT64_MAX - vaddr ? UINT64_MAX : vaddr + size;
+	if (!m_eager_pending.Intersects(vaddr, std::max<uint64_t>(end - vaddr, 1))) {
+		return;
+	}
+	m_scheduler.GetMasterSemaphore().Refresh();
+	RangeSet released;
+	std::erase_if(m_eager_downloads, [&](const EagerDownload& download) {
+		if (download.end <= vaddr || end <= download.begin ||
+		    (finished_only && !m_scheduler.IsFree(download.tick))) {
+			return false;
+		}
+		// The download was recorded before its batch was submitted, so no flush is needed.
+		m_scheduler.Wait(download.tick);
+		m_scheduler.WaitPriorityOperations(download.tick);
+		const auto first = Common::AlignDown(download.begin, TRACKER_PAGE_SIZE);
+		released.Add(first, Common::AlignUp(download.end, TRACKER_PAGE_SIZE) - first);
+		return true;
+	});
+	if (released.Empty()) {
+		return;
+	}
+	m_eager_pending = {};
+	for (const auto& download: m_eager_downloads) {
+		m_eager_pending.Add(download.begin, download.end - download.begin);
+	}
+	// A page keeps its protection while it holds GPU writes guest memory lacks.
+	RangeSet keep;
+	released.ForEach([&](uint64_t begin, uint64_t last) {
+		m_gpu_modified_ranges.ForEachInRange(
+		    begin, last - begin, [&](uint64_t first, uint64_t stop) {
+			    const auto page = Common::AlignDown(first, TRACKER_PAGE_SIZE);
+			    keep.Add(page, Common::AlignUp(stop, TRACKER_PAGE_SIZE) - page);
+		    });
+	});
+	for (const auto& download: m_eager_downloads) {
+		const auto first = Common::AlignDown(download.begin, TRACKER_PAGE_SIZE);
+		keep.Add(first, Common::AlignUp(download.end, TRACKER_PAGE_SIZE) - first);
+	}
+	released.ForEach([&](uint64_t begin, uint64_t last) {
+		RangeSet clean;
+		clean.Add(begin, last - begin);
+		keep.ForEachInRange(begin, last - begin, [&](uint64_t first, uint64_t stop) {
+			clean.Subtract(first, stop - first);
+		});
+		clean.ForEach([&](uint64_t first, uint64_t stop) {
+			m_memory_tracker.UnmarkRegionAsGpuModified(first, stop - first);
+		});
+	});
 }
 
 bool BufferCache::HasOnlyGpuDirtyBytes(uint64_t vaddr, uint64_t size) {
@@ -701,6 +803,9 @@ void BufferCache::RunGarbageCollector() {
 	size_t                retire_count = 0;
 	m_lru_cache.ForEachItemBelow(tick - age, [&](BufferId id) {
 		auto& buffer = m_slot_buffers[id];
+		if (HasEagerDownloads(buffer.CpuAddress(), buffer.Size())) {
+			return false;
+		}
 		m_memory_tracker.ValidateGpuDirtyOwnership(m_gpu_modified_ranges, buffer.CpuAddress(),
 		                                           buffer.Size(), "garbage collection");
 		const bool dirty = m_memory_tracker.IsRegionGpuModified(buffer.CpuAddress(), buffer.Size());

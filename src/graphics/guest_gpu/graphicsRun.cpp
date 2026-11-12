@@ -705,8 +705,17 @@ void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t 
 	}
 }
 
+// The CPU reads these writes back soon: submitting them now, with their downloads, lets the
+// host GPU run them while the following commands are recorded.
+static void SubmitReadBackWrites(RenderContext& renderer) {
+	if (renderer.GetBufferCache().HasEagerWrites()) {
+		renderer.GetCommandScheduler().Flush();
+	}
+}
+
 // Submits the recorded work every N draws so the host GPU starts before a long buffer ends.
 void CommandProcessor::CountDraw() {
+	SubmitReadBackWrites(m_renderer);
 	if (m_flush_draws == 0) {
 		return;
 	}
@@ -849,6 +858,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 
 void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_group_y,
                                       uint32_t thread_group_z, uint32_t mode) {
+	SubmitReadBackWrites(m_renderer);
 	m_sh_ctx.SetCsWaveSize(Pm4::ComputeWaveSize(mode));
 	m_renderer.GetRenderExecutor().DispatchDirect(CurrentBuffer(), thread_group_x, thread_group_y,
 	                                              thread_group_z, mode, IsAsyncComputeQueue());
@@ -866,6 +876,7 @@ void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 		DispatchDirect(args->x, args->y, args->z, mode);
 		return;
 	}
+	SubmitReadBackWrites(m_renderer);
 	m_sh_ctx.SetCsWaveSize(Pm4::ComputeWaveSize(mode));
 	m_renderer.GetRenderExecutor().DispatchIndirect(CurrentBuffer(), args_addr, mode,
 	                                                IsAsyncComputeQueue());
