@@ -1870,6 +1870,16 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size) {
 	});
 }
 
+bool TextureCache::HasGpuWrittenImageAt(uint64_t address) {
+	std::scoped_lock lock {m_lock};
+	bool             found = false;
+	ForEachImageInRegion(address, 1, [&](ImageId, Image& image) {
+		found = image.info.data.address == address && image.SafeToDownload();
+		return found;
+	});
+	return found;
+}
+
 bool TextureCache::CopyToImage(uint64_t address, uint64_t source, uint64_t size) {
 	std::scoped_lock lock {m_lock};
 	Common::SmallVector<ImageId, 8> targets;
@@ -2026,7 +2036,7 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 }
 
 void TextureCache::RunGarbageCollector() {
-	std::scoped_lock lock {m_lock};
+	std::unique_lock lock {m_lock};
 	const uint64_t   tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
@@ -2034,7 +2044,8 @@ void TextureCache::RunGarbageCollector() {
 	if (m_total_used_memory < m_trigger_gc_memory) {
 		return;
 	}
-	const auto collect = [&](bool allow_aggressive) {
+	std::vector<GuestRange> downloaded;
+	const auto              collect = [&](bool allow_aggressive) {
 		bool     pressured  = m_total_used_memory >= m_pressure_gc_memory;
 		bool     aggressive = allow_aggressive && m_total_used_memory >= m_critical_gc_memory;
 		uint64_t age        = 16;
@@ -2064,9 +2075,12 @@ void TextureCache::RunGarbageCollector() {
 				TouchImage(*owner);
 				continue;
 			}
-			if (owner->SafeToDownload() &&
-			    (!pressured || owner->info.HasStencil() || !DownloadImageMemory(id))) {
+			const bool download = owner->SafeToDownload();
+			if (download && (!pressured || owner->info.HasStencil() || !DownloadImageMemory(id))) {
 				continue;
+			}
+			if (download) {
+				downloaded.push_back(owner->info.data);
 			}
 			--deletions;
 			FreeImage(id);
@@ -2084,6 +2098,19 @@ void TextureCache::RunGarbageCollector() {
 	collect(false);
 	if (m_total_used_memory >= m_critical_gc_memory) {
 		collect(true);
+	}
+	if (downloaded.empty()) {
+		return;
+	}
+	// The next use of an evicted GPU-written image rebuilds it from guest memory, so its queued
+	// download must land there first, and older GPU writes cached in buffers there must not
+	// shadow it.
+	lock.unlock();
+	const auto completion_tick = m_scheduler.CurrentTick();
+	m_scheduler.Wait(completion_tick);
+	m_scheduler.WaitPriorityOperations(completion_tick);
+	for (const auto& range: downloaded) {
+		m_buffer_cache.AdoptGuestMemory(range.address, range.size);
 	}
 }
 

@@ -97,6 +97,9 @@ public:
 	// Queue after the range's state change becomes visible, or a drain could consume it first.
 	// A write queues only the pages a DMA shader accessed.
 	void               QueueBdaSync(uint64_t vaddr, uint64_t size, bool is_write = false);
+	// Guest memory holds the newest bytes of the range, such as a downloaded image's: GPU writes
+	// cached there are older and are dropped, so the next use reads guest memory.
+	void               AdoptGuestMemory(uint64_t vaddr, uint64_t size);
 	void               RunGarbageCollector();
 
 private:
