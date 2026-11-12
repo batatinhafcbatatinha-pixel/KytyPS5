@@ -101,6 +101,11 @@ public:
 	// cached there are older and are dropped, so the next use reads guest memory.
 	void               AdoptGuestMemory(uint64_t vaddr, uint64_t size);
 	void               RunGarbageCollector();
+	// Called before the GPU thread submits a batch. Downloads the batch's GPU writes to pages
+	// the CPU has read back before, so a later read waits only for this batch instead of
+	// flushing and draining the queue.
+	void               RecordEagerDownloads();
+	[[nodiscard]] bool HasEagerWrites() const { return !m_eager_writes.Empty(); }
 
 private:
 	friend struct BufferCacheTestAccess;
@@ -143,6 +148,16 @@ private:
 	template <bool async>
 	[[nodiscard]] bool DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t size);
 	void               ForgetColorMetadataChecks(uint64_t vaddr, uint64_t size);
+	// Publishes the eager downloads overlapping the range, waiting for them unless only the
+	// finished ones are wanted, and makes their pages readable again.
+	void               CompleteEagerDownloads(uint64_t vaddr, uint64_t size, bool finished_only);
+	[[nodiscard]] bool HasEagerDownloads(uint64_t vaddr, uint64_t size) const;
+
+	struct EagerDownload {
+		uint64_t begin;
+		uint64_t end;
+		uint64_t tick;
+	};
 
 	GraphicContext&                                   m_graphics;
 	CommandScheduler&                                 m_scheduler;
@@ -154,6 +169,13 @@ private:
 	BufferMap                                         m_buffers;
 	PageTable                                         m_page_table;
 	RangeSet                                          m_gpu_modified_ranges;
+	// Pages the CPU read while they held GPU writes, the GPU writes to them since the last
+	// submit, and the downloads of those writes whose bytes guest memory does not hold yet.
+	RangeSet                                          m_readback_pages;
+	RangeSet                                          m_eager_writes;
+	std::vector<EagerDownload>                        m_eager_downloads;
+	RangeSet                                          m_eager_pending;
+	bool                                              m_recording_eager = false;
 	// One per TileManager::ColorClearSlots key slot.
 	std::array<RangeSet, 8>                           m_checked_color_metadata;
 	MemoryTracker                                     m_memory_tracker;
