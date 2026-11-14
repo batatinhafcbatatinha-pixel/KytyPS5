@@ -1430,6 +1430,27 @@ bool ValidateWaveUniformValue(const ResourcePlan& program, Value value) {
 	return RuntimeValidator(program, RuntimeValueType::Any, true).Run(value);
 }
 
+namespace {
+thread_local bool t_walker_skips_gpu_written = false;
+thread_local bool t_walker_tainted           = false;
+} // namespace
+
+void SetWalkerSkipsGpuWritten(bool skip) {
+	t_walker_skips_gpu_written = skip;
+}
+
+bool WalkerSkipsGpuWritten() {
+	return t_walker_skips_gpu_written && t_running_walker != nullptr;
+}
+
+void MarkWalkerTainted() {
+	t_walker_tainted = true;
+}
+
+bool TakeWalkerTaint() {
+	return std::exchange(t_walker_tainted, false);
+}
+
 uint32_t SrtWalkerLoadLength(uint64_t rip) {
 	if (t_running_walker == nullptr ||
 	    rip - reinterpret_cast<uint64_t>(t_running_walker->getCode()) >= t_running_walker->getSize())

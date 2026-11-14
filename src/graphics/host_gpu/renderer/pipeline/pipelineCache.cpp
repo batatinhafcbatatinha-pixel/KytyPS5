@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "common/fpsProbe.h" // FPSPROBE
 
 #include "common/assert.h"
 #include "common/debugCounters.h"
@@ -247,8 +248,9 @@ ShaderRecompiler::Spirv::Profile SpirvProfile(const GraphicContext& graphics) {
 }
 
 std::filesystem::path ShaderStorePath() {
+	// Programs compiled for the GPU-side SRT differ from the stored ones.
 	if (KYTY_BUILD != KYTY_BUILD_RELEASE || !Config::ShaderCacheEnabled() ||
-	    Config::GraphicsDebugDumpEnabled()) {
+	    Config::GraphicsDebugDumpEnabled() || ShaderRecompiler::IR::GpuSrtEnabled()) {
 		return {};
 	}
 	const auto title_id = PipelineCacheTitleId();
@@ -647,6 +649,7 @@ void PipelineCache::WriteDriverCache() const {
 }
 
 void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRenderState& state) {
+	FpsProbe::Scope fps_scope(FpsProbe::Programs); // FPSPROBE
 	const auto& context           = command.GetRegisters();
 	const auto& user_config       = command.GetUserConfig();
 	const auto& sh                = context.GetShaderRegisters();
@@ -871,6 +874,7 @@ void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRender
 
 const ShaderModule* PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs,
                                                      ShaderComputeInputInfo&      input_info) {
+	FpsProbe::Scope fps_scope(FpsProbe::Programs); // FPSPROBE
 	input_info.host_subgroup_size = m_graphics.SupportsComputeWave64() ? 64u : 32u;
 	const auto        params      = PrepareProgram(regs, input_info);
 	input_info.lds_storage = input_info.lds_size_dwords * 4u >
@@ -882,6 +886,7 @@ const ShaderModule* PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo
 PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&   command,
                                                             const DrawRenderState& state,
                                                             const DrawTargets&     targets) {
+	FpsProbe::Scope fps_scope(FpsProbe::Pipeline); // FPSPROBE
 	const auto* colors        = targets.colors;
 	const auto& depth         = targets.depth;
 	const auto  vertex_info   = state.VertexStages();
@@ -1074,6 +1079,7 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 }
 
 PipelineCache::Pipeline& PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info) {
+	FpsProbe::Scope fps_scope(FpsProbe::Pipeline); // FPSPROBE
 	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(Compute)", profiler::colors::RedA100);
 
 	const auto& module = *input_info.stage.module;

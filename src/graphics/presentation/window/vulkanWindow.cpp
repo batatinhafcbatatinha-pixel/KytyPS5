@@ -409,6 +409,8 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	       image_atomic_int64, conditional_rendering, barycentric, acceleration_structure,
 	       ray_query, cooperative_matrix, float8] = supported;
 	graphics.memory_budget_ext_enabled = add(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+	// GPU-SRT reads guest memory through imported host pages (BufferCache host view).
+	graphics.external_memory_host_enabled = add(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
 	add(VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
 	const bool extended_dynamic_state = add(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
 	if (!add(VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME)) {
@@ -591,7 +593,7 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	    Config::OcclusionQueriesEnabled() && supported12.hostQueryReset;
 	graphics.occlusion_query_precise_enabled =
 	    graphics.occlusion_queries_enabled && supported2.features.occlusionQueryPrecise;
-	features12.hostQueryReset             = graphics.occlusion_queries_enabled;
+	features12.hostQueryReset             = supported12.hostQueryReset; // Also the GPU timer probe.
 	device_features.occlusionQueryPrecise = graphics.occlusion_query_precise_enabled;
 	LOGF("Vulkan ray query: %s\n", ray_query_enabled ? "true" : "false");
 	LOGF("Vulkan occlusion queries: %s, precise: %s\n",

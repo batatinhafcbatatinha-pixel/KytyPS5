@@ -923,6 +923,7 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			return SpecializationFail(fmt::format("image resource {} has an invalid root", i));
 		}
 		const auto& base = program.info.images[base_index];
+		if (base.global) continue;
 		if (base.resource_class == ImageResourceClass::None ||
 		    (base.atomic && base.resource_class != ImageResourceClass::Storage)) {
 			return SpecializationFail(fmt::format("image resource {} has an invalid class", i));
@@ -1050,7 +1051,8 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 	}
 	for (uint32_t root_index = 0; root_index < specialization.images.size(); root_index++) {
 		auto& root = specialization.images[root_index];
-		if (root.indirect_root != root_index) {
+		if (root.indirect_root != root_index ||
+		    (root_index < program.info.images.size() && program.info.images[root_index].global)) {
 			continue;
 		}
 		const auto key_count = root.indirect_mapping_offset < snapshot.flattened_srt.size()
@@ -1582,6 +1584,56 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 	return plan;
 }
 
+namespace {
+
+bool PlanValueReadsMemory(Value value, uint32_t depth = 0) {
+	const auto* inst = value.Resolve().TryInstruction();
+	if (inst == nullptr || depth > 24u) return false;
+	const auto op = inst->GetOpcode();
+	if (op == ValueOpcode::LoadAddressU32 || op == ValueOpcode::ReadConstBuffer ||
+	    op == ValueOpcode::LoadBufferU32) {
+		return true;
+	}
+	for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+		if (PlanValueReadsMemory(inst->Arg(arg), depth + 1u)) return true;
+	}
+	return false;
+}
+
+// Hybrid GPU-SRT: a walk may skip GPU-written words only when nothing but global images and
+// samplers takes descriptors from guest memory, since only those have a shader-side fallback.
+bool HybridWalkAllowed(const ResourcePlan& program) {
+	static std::unordered_map<const ResourcePlan*, std::pair<uint64_t, bool>> cache;
+	const auto found = cache.find(&program);
+	if (found != cache.end() && found->second.first == program.shader_hash) return found->second.second;
+	bool any_global = false;
+	bool allowed    = true;
+	const auto source_reads = [&](uint32_t source) {
+		if (source >= program.descriptor_sources.size()) return false;
+		const auto& descriptor = program.descriptor_sources[source];
+		if (descriptor.indirect_descriptor) return true;
+		for (uint32_t word = 0; word < descriptor.dword_count; ++word) {
+			if (PlanValueReadsMemory(descriptor.dwords[word])) return true;
+		}
+		return false;
+	};
+	for (const auto& image: program.info.images) {
+		if (image.global) any_global = true;
+		else if (source_reads(image.source)) allowed = false;
+	}
+	for (const auto& sampler: program.info.samplers) {
+		if (!sampler.global && source_reads(sampler.source)) allowed = false;
+	}
+	for (const auto& buffer: program.info.buffers) {
+		if (source_reads(buffer.source)) allowed = false;
+	}
+	const bool result = any_global && allowed;
+	cache[&program] = {program.shader_hash, result};
+	return result;
+}
+
+} // namespace
+
 bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime,
                           ResourceSnapshot& snapshot, ResourceSpecialization& specialization) {
 	for (auto& keys: program.selector_keys) keys.resolved = false;
@@ -1594,7 +1646,32 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	     std::ranges::any_of(program.descriptor_sources, uses_workgroup_count));
 	auto& reads = snapshot.specialization_reads;
 	reads = program.source_reads;
-	if (!WalkSrt(program, runtime, snapshot.flattened_srt, capture_reads ? &reads : nullptr)) {
+	const bool hybrid = runtime.image_heap != nullptr && HybridWalkAllowed(program);
+	SetWalkerSkipsGpuWritten(hybrid);
+	(void)TakeWalkerTaint();
+	const bool walked = WalkSrt(program, runtime, snapshot.flattened_srt, capture_reads ? &reads : nullptr);
+	SetWalkerSkipsGpuWritten(false);
+	// A tainted walk read zeros for GPU-written words: global descriptors use the shader path.
+	const bool runtime_descriptors = !hybrid || TakeWalkerTaint();
+	const auto global_entry = [&](uint32_t source, uint32_t words, uint32_t profile) {
+		DescriptorValue value;
+		if (runtime_descriptors || !WalkedActive(program, source) ||
+		    !WalkedDescriptor(program, source, value)) {
+			return UINT32_MAX;
+		}
+		std::array<uint32_t, GlobalMapKeyWords> key {};
+		std::copy_n(value.dwords.begin(), words, key.begin());
+		key[8] = profile;
+		return runtime.image_heap->GlobalEntry(key);
+	};
+	// Two flattened words per global root: use the shader path, and the host-resolved entry.
+	const auto push_entry = [&](uint32_t entry) {
+		const auto offset = static_cast<uint32_t>(snapshot.flattened_srt.size());
+		snapshot.flattened_srt.push_back(entry == UINT32_MAX ? 1u : 0u);
+		snapshot.flattened_srt.push_back(entry == UINT32_MAX ? 0u : entry);
+		return offset;
+	};
+	if (!walked) {
 		return SpecializationFail(fmt::format("SRT refresh complete={} reads={} user_data={}",
 		    program.srt_plan_complete, program.srt_reads.size(), runtime.user_data.size()));
 	}
@@ -1717,6 +1794,29 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		if (source == nullptr) {
 			return false;
 		}
+		if (image.global) {
+			// GPU-SRT: the shader resolves the T# through the global map into one arm per kind.
+			snapshot.images[i] = {.dword_count = 8u};
+			auto root = ImageHeapResource(image, 0u);
+			specialization.images[i] = {.numeric_class = Prospero::TextureNumericClass::Float,
+			                            .dimension     = image.dimension,
+			                            .indirect_root = i,
+			                            .indirect_mapping_offset =
+			                                push_entry(global_entry(image.source, image.r128 ? 4u : 8u,
+			                                                        GlobalImageProfile(image))),
+			                            .heap          = true};
+			for (uint32_t arm = 0; arm < GlobalImageArms; ++arm) {
+				const auto kind = ImageHeapResource(root, GlobalImageFirstKind + arm);
+				snapshot.images.push_back({.dword_count = 8u});
+				specialization.images.push_back(
+				    {.numeric_class = kind.numeric_class,
+				     .dimension     = image.dimension,
+				     .indirect_root = i,
+				     .cube = kind.cube && image.dimension == Decoder::ImageDimension::Dim2DArray,
+				     .heap = true});
+			}
+			continue;
+		}
 		if (source->indirect_descriptor.has_value()) {
 			snapshot.images[i] = {.dword_count = 8u};
 			if (!WalkedActive(program, image.source) || !WalkedImageActive(program, i)) {
@@ -1752,7 +1852,15 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		const auto base_index =
 		    i < program.info.samplers.size() ? i : specialization.samplers[i].indirect_root;
 		if (base_index >= program.info.samplers.size()) return false;
-		if (i < program.info.samplers.size()) {
+		if (i < program.info.samplers.size() && program.info.samplers[i].global) {
+			snapshot.samplers[i] = {.dword_count = 4u};
+			const bool depth = std::ranges::any_of(program.info.sampled_pairs, [&](const auto& pair) {
+				return pair.sampler == i && pair.image < program.info.images.size() &&
+				       program.info.images[pair.image].depth_compare;
+			});
+			specialization.samplers[i].indirect_mapping_offset = push_entry(global_entry(
+			    program.info.samplers[i].source, 4u, GlobalMapSamplerProfile | (depth ? 1u << 4u : 0u)));
+		} else if (i < program.info.samplers.size()) {
 			auto source = program.info.samplers[i].source;
 			const auto* descriptor = Source(program, source);
 			if (descriptor == nullptr) return false;

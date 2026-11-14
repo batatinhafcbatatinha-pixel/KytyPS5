@@ -5,7 +5,9 @@
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
+#include <array>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -40,6 +42,9 @@ public:
 	}
 	bool Acquire(const ShaderRecompiler::IR::ImageHeapRequest& request,
 	             ShaderRecompiler::IR::ImageHeapView&          result) override;
+	// Hybrid GPU-SRT: the entry of a walked T#/S#, resolved now (before this draw's Rebind).
+	uint32_t GlobalEntry(
+	    const std::array<uint32_t, ShaderRecompiler::IR::GlobalMapKeyWords>& key) override;
 	// Image discovery: resolves new elements and rediscovers changed images.
 	void Rebind(RenderExecutor& executor);
 	// Recording: uploads slots, moves resident images to their read layout and binds the array.
@@ -49,6 +54,10 @@ public:
 	void UnmapMemory(uint64_t address, uint64_t size);
 	// At a suspend point.
 	void RunGarbageCollector();
+	// GPU-SRT global descriptor map (ShaderRecompiler::IR::GlobalMap*): at submission, reads back
+	// the miss ring of the batch and clears it. Rebind resolves the reported keys once the batch
+	// has finished, and Commit writes their entries before the next draw.
+	void RecordGlobalReadback(CommandBuffer& buffer);
 
 private:
 	using DescriptorValue = ShaderRecompiler::IR::DescriptorValue;
@@ -92,6 +101,8 @@ private:
 		uint64_t                resolve_epoch = 0;
 		uint64_t                layout_epoch  = 0;
 		uint64_t                held_serial   = 0; // Image::serials when held was last retried.
+		bool                    global        = false; // A global map profile; slots are buckets.
+		bool                    stale_pending = false; // Global: an element went stale.
 	};
 
 	struct Memory {
@@ -122,6 +133,25 @@ private:
 	void     Retire(View& view);
 	void     Resize(Memory& memory, uint64_t size);
 	void     WriteDescriptors();
+	void     BuryView(Memory& memory, View& view);
+
+	using GlobalKey = std::array<uint32_t, ShaderRecompiler::IR::GlobalMapKeyWords>;
+	struct GlobalBucket {
+		GlobalKey key {};
+		View*     view  = nullptr; // Image buckets: the view whose slot holds the entry.
+		uint32_t  state = 0;       // Other buckets: the state word.
+		bool      known = false;
+	};
+	struct GlobalReadback {
+		uint64_t                tick = 0;
+		std::unique_ptr<Buffer> buffer;
+	};
+	void     DrainGlobalMisses();
+	void     ResolveGlobalBucket(uint32_t bucket, const GlobalKey& key);
+	View&    GlobalView(uint32_t profile);
+	uint32_t GlobalSampler(const GlobalKey& key);
+	void     ClearGlobalMap(CommandBuffer& buffer);
+	void     UploadGlobalBuckets(CommandBuffer& buffer);
 
 	RenderContext&                       m_context;
 	PageManager&                         m_page_manager;
@@ -141,6 +171,21 @@ private:
 	vk::DescriptorSetLayout                   m_layout = nullptr;
 	vk::DescriptorPool                        m_pool   = nullptr;
 	vk::DescriptorSet                         m_set    = nullptr;
+	std::unique_ptr<Buffer>                   m_global_map;
+	std::unique_ptr<Memory>                   m_global_memory; // Dead words of global buckets.
+	std::vector<std::unique_ptr<View>>        m_global_views;
+	std::unordered_map<uint32_t, View*>       m_global_view_by_profile;
+	std::vector<GlobalBucket>                 m_global_buckets;
+	std::vector<uint32_t>                     m_global_dirty; // Buckets to write.
+	std::deque<GlobalReadback>                m_global_readbacks;
+	std::vector<std::unique_ptr<Buffer>>      m_global_spare;
+	std::map<std::array<uint32_t, 5>, uint32_t> m_global_samplers; // S#, profile: array index.
+	// Global elements by the Image::serial they bind, revisited when that image changes.
+	std::unordered_map<uint64_t, std::vector<std::pair<View*, uint32_t>>> m_global_by_serial;
+	void RevisitGlobalChanges();
+	uint32_t                                  m_global_sampler_count = 0;
+	bool                                      m_global_cleared       = false;
+	bool                                      m_global_used          = false; // Since a readback.
 
 	friend struct ImageHeapTestAccess;
 };

@@ -140,6 +140,21 @@ void                   WriteBacking(uint64_t vaddr, const void* data, uint64_t s
 void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
 void                   InstallGpuResources(Graphics::RenderContext* renderer) noexcept;
 [[nodiscard]] bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept;
+// A GPU-thread SRT-walker load of a GPU-written word whose page held the same data every time it
+// was read back: the guest word, without waiting for the GPU. Verified when the page is published.
+[[nodiscard]] bool TrySpeculativeWalkerLoad(uint64_t vaddr, uint32_t* value) noexcept;
+// Reads a small descriptor table the GPU thread needs to record work (vertex fetch tables).
+// GPU-written bytes are read back; pages that held the same bytes every time can be read from
+// guest memory at once and are verified when their download lands. False when not readable.
+[[nodiscard]] bool ReadGpuTable(uint64_t vaddr, void* data, uint64_t size);
+// The host view of guest direct and flexible memory: one read-write mapping of the whole backing,
+// which the GPU imports so shaders read guest pages as the CPU last wrote them.
+// PROBE (temporary): buffer-cache state of a guest page, for crash reports.
+void DescribeGpuPage(uint64_t vaddr) noexcept;
+[[nodiscard]] uint64_t GuestBackingBase();
+[[nodiscard]] uint64_t GuestBackingSize();
+// The backing offset of a mapped guest byte; false for unbacked (private or unmapped) memory.
+[[nodiscard]] bool GuestBackingOffset(uint64_t vaddr, uint64_t* offset);
 
 int KYTY_SYSV_ABI KernelMapNamedFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags,
                                                const char* name);

@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
+#include "common/fpsProbe.h" // FPSPROBE
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -722,6 +723,7 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	EXIT_IF(!runtime);
 	const auto& program  = runtime.module->info;
 	const auto& snapshot = *runtime.resources;
+	FpsProbe::g_producer = program.shader_hash; // PROBE
 	prepared.runtime = &runtime;
 	prepared.gds = {nullptr, 0, VK_WHOLE_SIZE};
 	prepared.flattened_srt = {};
@@ -886,23 +888,71 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 	}
 }
 
+// Global loads read pages without a buffer as zero. Back the pages after each base a draw stage
+// loads from scalar data, as compute dispatches do, before the draw reads them.
+// GPU-SRT shaders load through pointers in user data, which no flattened SRT slot holds. Global
+// loads read pages without a buffer as zero, so back the pages after each such base first.
+void BackUserDataBases(RenderContext& context, const ShaderStageRuntime& stage) {
+	constexpr uint64_t Page      = BufferCache::CACHING_PAGESIZE;
+	const auto&        program   = stage.module->info;
+	const auto&        user_data = stage.resources->user_data;
+	for (const auto [low, high]: program.info.user_data_bases) {
+		if (low < program.user_data_base || high < program.user_data_base ||
+		    low - program.user_data_base >= user_data.size() ||
+		    high - program.user_data_base >= user_data.size()) {
+			continue;
+		}
+		const auto base = user_data[low - program.user_data_base] |
+		                  uint64_t {user_data[high - program.user_data_base]} << 32u;
+		for (uint64_t index = 0; index <= 2; ++index) {
+			const auto page = base + index * Page;
+			if (context.IsMapped(page, 1)) (void)context.GetBufferCache().FindBuffer(page, 1);
+		}
+	}
+}
+
+void RenderExecutor::BackDrawAddressBases(const ShaderStageRuntime& stage) {
+	constexpr uint64_t Page = BufferCache::CACHING_PAGESIZE;
+	const auto&        flat = stage.resources->flattened_srt;
+	for (const auto [low, high]: stage.module->info.info.address_bases) {
+		if (low >= flat.size() || high >= flat.size()) {
+			continue;
+		}
+		const auto base = flat[low] | uint64_t {flat[high]} << 32u;
+		for (uint64_t index = 0; index <= 2; ++index) {
+			const auto page = base + index * Page;
+			if (m_context.IsMapped(page, 1)) (void)m_context.GetBufferCache().FindBuffer(page, 1);
+		}
+	}
+	BackUserDataBases(m_context, stage);
+}
+
 void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
                                              std::span<RenderColorInfo> colors) {
+	FpsProbe::Scope fps_scope(FpsProbe::Bindings); // FPSPROBE
 	bool uses_dma        = false;
 	bool uses_image_heap = false;
-	FindBuffers(stages);
+	{
+		FpsProbe::Scope zone(FpsProbe::FindBuf); // FPSPROBE
+		FindBuffers(stages);
+	}
 	for (auto* stage: stages) {
 		uses_dma |= stage->runtime->module->info.info.uses_dma;
 		uses_image_heap |= stage->runtime->module->info.info.uses_image_heap;
+		BackDrawAddressBases(*stage->runtime);
 	}
 	if (uses_dma) {
+		FpsProbe::Scope zone(FpsProbe::Bda); // FPSPROBE
 		m_context.PrepareBda();
 	}
 	if (uses_image_heap) {
 		m_context.GetImageHeap().Rebind(*this);
 	}
-	for (auto* stage: stages) {
-		RebindImages(*stage);
+	{
+		FpsProbe::Scope zone(FpsProbe::RebindImg); // FPSPROBE
+		for (auto* stage: stages) {
+			RebindImages(*stage);
+		}
 	}
 	auto& cache = m_context.GetTextureCache();
 	for (auto& target: colors) {
@@ -918,6 +968,7 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 	}
 	// Discovery can read back PS5 metadata and submit the scheduler. Reserve draw buffers only
 	// after image identities are final; attachment layout transitions follow buffer alias copies.
+	FpsProbe::Scope zone(FpsProbe::RebindBuf); // FPSPROBE
 	for (auto* stage: stages) {
 		RebindBuffers(*stage);
 	}
@@ -927,6 +978,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
                                     vk::PipelineBindPoint              pipeline_bind_point,
                                     const PipelineCache::Pipeline&     pipeline,
                                     std::span<PreparedBindings* const> prepared_bindings) {
+	FpsProbe::Scope fps_scope(FpsProbe::Commit); // FPSPROBE
 	KYTY_PROFILER_FUNCTION();
 	auto                           vk_buffer              = buffer.Handle();
 	size_t                         image_descriptor_count = 0;

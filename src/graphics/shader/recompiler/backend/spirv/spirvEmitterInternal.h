@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <spirv/unified1/GLSL.std.450.h>
@@ -140,6 +141,10 @@ struct EmitterState {
 	uint32_t                   sampler_variable                      = 0;
 	uint32_t                   sampler_type                          = 0;
 	uint32_t                   sampler_pointer_type                  = 0;
+	uint32_t                   global_sampler_variable               = 0; // GPU-SRT samplers.
+	uint32_t                   global_sampler_pointer_type           = 0;
+	uint32_t                   global_map_lookup_function            = 0;
+	uint32_t                   global_map_probe_function             = 0;
 	uint32_t                   main_func                             = 0;
 	uint32_t                   mesh_guest_func                       = 0;
 	uint32_t                   mesh_allocation                       = 0;
@@ -423,6 +428,11 @@ uint32_t EmitIndirectResourceIndex(EmitterState& state, uint32_t key, uint32_t m
                                    uint32_t search_iterations, uint32_t default_resource);
 // Slot word of an image heap byte offset; offsets past the heap select the null element.
 uint32_t EmitImageHeapEntry(EmitterState& state, uint32_t key, uint32_t mapping_offset);
+// A constant-index word of the flattened SRT.
+uint32_t EmitLoadFlattenedSrtWord(EmitterState& state, uint32_t index);
+// Hybrid GPU-SRT: nonzero when this draw resolves global descriptors in the shader (the walk met
+// GPU-written words); the host otherwise put each root's entry next to its flag.
+uint32_t EmitGlobalRuntimeFlag(EmitterState& state);
 MemoryResourceAccess PrepareMemoryResourceAccess(EmitterState& state, const IR::MemoryInfo& mem,
                                                  uint32_t array_index = 0u);
 
@@ -522,6 +532,15 @@ uint32_t EmitF32BitsToF16RtzBits(EmitterState& state, uint32_t bits);
 void EmitProgram(EmitterState& state);
 
 void DefineGetBdaPointer(EmitterState& state);
+// GPU-SRT global descriptor map (IR::GlobalMap*): a key's resolved entry, or 0 while the host has
+// not resolved it; a missing key is reported once through the map's miss ring.
+void     DefineGlobalMapLookup(EmitterState& state);
+// A wave-uniform (SGPR) value made subgroup-uniform for the host compiler: the first active lane's.
+uint32_t EmitBroadcastFirstU32(EmitterState& state, uint32_t value);
+// Computes a subgroup-uniform value in one elected lane and broadcasts it.
+uint32_t EmitElectedU32(EmitterState& state, const std::function<uint32_t()>& compute);
+uint32_t EmitBroadcastFirstU64(EmitterState& state, uint32_t value);
+uint32_t EmitGlobalMapLookup(EmitterState& state, const std::array<uint32_t, 9>& key);
 void DefineIndirectBufferLoads(ValueEmitContext& ctx);
 void DefineBvhIntersect(EmitterState& state);
 void DefineTrinityBvhIntersect(EmitterState& state);

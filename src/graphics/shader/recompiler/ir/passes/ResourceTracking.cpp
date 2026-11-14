@@ -6,6 +6,7 @@
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -23,6 +24,81 @@
 #include <xxhash.h>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
+
+static uint32_t GpuSrtMask() {
+	static const uint32_t mask = [] {
+		const char* value = std::getenv("KYTY_GPU_SRT");
+		if (value == nullptr) return 0u;
+		const auto parsed = static_cast<uint32_t>(std::strtoul(value, nullptr, 0));
+		return parsed;
+	}();
+	return mask;
+}
+
+bool GpuSrtEnabled() {
+	return GpuSrtMask() != 0u;
+}
+
+bool GpuSrtPartEnabled(uint32_t part) {
+	return (GpuSrtMask() & part) != 0u;
+}
+
+
+static std::atomic<uint64_t> g_global_map_address {0};
+
+void SetGlobalMapAddress(uint64_t address) {
+	g_global_map_address.store(address, std::memory_order_relaxed);
+}
+
+uint64_t GlobalMapAddress() {
+	return g_global_map_address.load(std::memory_order_relaxed);
+}
+
+static std::atomic<bool> g_host_bda_writes {false};
+
+void SetHostBdaWrites(bool enabled) {
+	g_host_bda_writes.store(enabled, std::memory_order_relaxed);
+}
+
+bool FormattedVectorRuntime() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_FMT_VECTOR");
+		return value == nullptr || value[0] != '0';
+	}();
+	return enabled;
+}
+
+bool NoRuntimeStores() {
+	static const bool disabled = std::getenv("KYTY_NO_RT_STORES") != nullptr;
+	return disabled;
+}
+
+bool HostBdaWrites() {
+	return g_host_bda_writes.load(std::memory_order_relaxed);
+}
+
+namespace {
+
+// Whether value reads guest memory: a descriptor built from loaded words, which the shader can
+// load itself instead of the CPU walking the tables.
+bool DependsOnMemoryLoad(Value value, uint32_t depth = 0) {
+	const auto* inst = value.Resolve().TryInstruction();
+	if (inst == nullptr || depth > 32u) {
+		return false;
+	}
+	const auto op = inst->GetOpcode();
+	if (op == ValueOpcode::LoadAddressU32 || op == ValueOpcode::ReadConstBuffer) {
+		return true;
+	}
+	for (size_t i = 0; i < inst->NumArgs(); i++) {
+		if (DependsOnMemoryLoad(inst->Arg(i), depth + 1u)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+} // namespace
 namespace {
 
 constexpr uint32_t SamplerBorderClampMask    = (1u << 2u) | (1u << 5u) | (1u << 8u);
@@ -386,6 +462,7 @@ public:
 		m_info.samplers.clear();
 		m_info.sampled_pairs.clear();
 		m_info.address_bases.clear();
+		m_info.user_data_bases.clear();
 		m_shader_writes = HasShaderMemoryWrites(program);
 	}
 
@@ -879,6 +956,87 @@ private:
 		}
 	}
 
+	// GPU-side SRT: a buffer access whose descriptor words come from guest memory and that the
+	// run-time descriptor path supports loads the descriptor in the shader.
+	[[nodiscard]] bool GpuSrtRuntimeBuffer(const Inst& inst, const MemoryInfo& memory) const {
+		if (!GpuSrtEnabled() || inst.NumArgs() == 0) {
+			return false;
+		}
+		const auto op = inst.GetOpcode();
+		if (!GpuSrtPartEnabled(op == ValueOpcode::ReadConstBuffer ? GpuSrtScalarBuffers
+		                                                          : GpuSrtVectorBuffers)) {
+			return false;
+		}
+		if (BufferAccessOf(op) == BufferAccess::None ||
+		    memory.kind != (op == ValueOpcode::ReadConstBuffer ? ResourceKind::ScalarBuffer
+		                                                       : ResourceKind::Buffer) ||
+		    (!memory.SupportsIndirectBufferLoad(op) && !memory.SupportsIndirectBufferWrite(op))) {
+			return false;
+		}
+		// TEST (temporary): KYTY_FMT_STAGES limits multi-component formatted run-time loads by
+		// stage (1 vertex, 2 pixel, 4 compute, 8 other).
+		if (memory.formatted && op != ValueOpcode::LoadBufferU32) {
+			static const uint32_t stages = [] {
+				const char* value = std::getenv("KYTY_FMT_STAGES");
+				return value == nullptr ? 15u : static_cast<uint32_t>(std::strtoul(value, nullptr, 0));
+			}();
+			const auto stage = m_program.stage;
+			const uint32_t bit = stage == ShaderType::Vertex || stage == ShaderType::Local ? 1u
+			                   : stage == ShaderType::Pixel                                 ? 2u
+			                   : stage == ShaderType::Compute                               ? 4u
+			                                                                                : 8u;
+			if ((stages & bit) == 0u) return false;
+		}
+		const auto* handle = inst.Arg(0).Resolve().TryInstruction();
+		if (handle == nullptr || handle->GetOpcode() != ValueOpcode::GetBufferResource ||
+		    handle->NumArgs() < 4) {
+			return false;
+		}
+		for (size_t word = 0; word < 4; word++) {
+			if (DependsOnMemoryLoad(handle->Arg(word))) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// GPU-SRT: a sampled image access whose T# words come from guest memory resolves its image
+	// and sampler in the shader through the global descriptor map (IR::GlobalMap*).
+	[[nodiscard]] bool GpuSrtGlobalImage(const Inst& inst, const MemoryInfo& memory) const {
+		if (!GpuSrtPartEnabled(GpuSrtImages) || memory.kind != ResourceKind::Image) {
+			return false;
+		}
+		const auto op   = inst.GetOpcode();
+		const auto info = ImageOpcodeInfoOf(op);
+		if ((op != ValueOpcode::ImageSampleRaw && op != ValueOpcode::ImageGatherRaw &&
+		     op != ValueOpcode::ImageRead && op != ValueOpcode::ImageQueryDimensions) ||
+		    info.resource_class != ImageResourceClass::Sampled ||
+		    inst.NumArgs() < (info.needs_sampler ? 2u : 1u) ||
+		    (memory.image_sample_flags & Decoder::ImageSampleFlagAdjust) != 0u ||
+		    (op == ValueOpcode::ImageGatherRaw &&
+		     (memory.image_sample_flags & Decoder::ImageSampleFlagLod) != 0u)) {
+			return false;
+		}
+		const auto* handle = inst.Arg(0).Resolve().TryInstruction();
+		if (handle == nullptr || handle->GetOpcode() != ValueOpcode::GetImageResource ||
+		    handle->NumArgs() < 8) {
+			return false;
+		}
+		if (info.needs_sampler) {
+			const auto* sampler = inst.Arg(1).Resolve().TryInstruction();
+			if (sampler == nullptr || sampler->GetOpcode() != ValueOpcode::GetSamplerResource ||
+			    sampler->NumArgs() < 4) {
+				return false;
+			}
+		}
+		for (size_t word = 0; word < (memory.image_r128 ? 4u : 8u); word++) {
+			if (DependsOnMemoryLoad(handle->Arg(word))) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	void PlanScalarReads() {
 		m_program.srt_plan_complete = false;
 		m_program.srt_reads.clear();
@@ -910,6 +1068,13 @@ private:
 					const auto base = width == 2u
 					    ? (memory.kind == ResourceKind::ScalarAddress ? ScalarReadBase(inst) : UINT32_MAX)
 					    : (sampler ? memory.sampler : memory.resource) * 4u;
+					if (kind == ValueOpcode::GetBufferResource && GpuSrtRuntimeBuffer(inst, memory)) {
+						continue;
+					}
+					if ((kind == ValueOpcode::GetImageResource || sampler) &&
+					    GpuSrtGlobalImage(inst, memory)) {
+						continue;
+					}
 					DescriptorSource source;
 					MakeSource(*handle, width, sampler,
 					           sampler && (memory.image_sample_flags & Decoder::ImageSampleFlagAdjust) != 0,
@@ -922,7 +1087,7 @@ private:
 		for (auto* block: m_program.blocks) {
 			for (auto& inst: *block) {
 				uint32_t index = 0;
-				if (inst.GetOpcode() == ValueOpcode::LoadAddressU32 &&
+				if (!GpuSrtPartEnabled(GpuSrtScalarReads) && inst.GetOpcode() == ValueOpcode::LoadAddressU32 &&
 				    ScalarReadMemory(inst, index) != nullptr && inst.Arg(1).Resolve().IsImmediate() &&
 				    ValidateRuntimeValue(m_program, Value(&inst)))
 					CollectScalarRead(Value(&inst), inst.Flags<MemoryFlags>().pc);
@@ -3991,6 +4156,9 @@ private:
 				}
 				const auto flags = inst.Flags<MemoryFlags>();
 				const auto& memory = m_program.memory_info[flags.index];
+				// GPU-SRT: run-time descriptors are loaded by the shader, never from a CPU table read.
+				if (GpuSrtGlobalImage(inst, memory) ||
+				    GpuSrtRuntimeBuffer(inst, memory)) continue;
 				const auto plan_handle = [&](Value value, uint32_t width, uint32_t base, bool sampler) {
 					auto* handle = value.Resolve().TryInstruction();
 					if (handle == nullptr || FindIndirectDescriptor(*handle) != nullptr) return;
@@ -4100,7 +4268,35 @@ private:
 		                           memory.kind == ResourceKind::ScalarBuffer;
 	}
 
-	uint32_t AddImage(uint32_t source, const MemoryInfo& memory, ValueOpcode op, uint32_t pc) {
+	// The shader loads the T#/S# words itself; their sources are never walked (see
+	// WalkerCompiler::Consume and MaterializeResources), so they need no validation.
+	void CollectGlobalImage(Inst& inst, const MemoryInfo& memory, ValueOpcode op, bool needs_sampler,
+	                        MemoryFlags flags) {
+		auto*            handle = inst.Arg(0).Resolve().TryInstruction();
+		DescriptorSource descriptor;
+		MakeSource(*handle, 8, false, false, memory.resource * 4u, descriptor, flags.pc);
+		const auto resource = AddImage(InternSource(descriptor), memory, op, flags.pc, true);
+		if (resource == UINT32_MAX) {
+			Fail(flags.pc, "image resource limit exceeded");
+		}
+		AddHandlePatch(handle, resource, flags.pc);
+		uint32_t sampler = 0;
+		if (needs_sampler) {
+			auto*            sampler_handle = inst.Arg(1).Resolve().TryInstruction();
+			DescriptorSource sampler_source;
+			MakeSource(*sampler_handle, 4, true, false, memory.sampler * 4u, sampler_source, flags.pc);
+			sampler = AddSampler(InternSource(sampler_source), flags.pc, true);
+			if (sampler == UINT32_MAX) {
+				Fail(flags.pc, "sampler resource limit exceeded");
+			}
+			AddHandlePatch(sampler_handle, sampler, flags.pc);
+			AddSampledPair(resource, sampler, flags.pc);
+		}
+		AddMemoryPatch(flags.index, resource, sampler, needs_sampler, flags.pc);
+	}
+
+	uint32_t AddImage(uint32_t source, const MemoryInfo& memory, ValueOpcode op, uint32_t pc,
+	                  bool global = false) {
 		const auto resource_class = ImageOpcodeInfoOf(op).resource_class;
 		const bool atomic64 = ImageOpcodeInfoOf(op).access == ImageAccess::Atomic &&
 		                      memory.data_bits == 64u;
@@ -4115,7 +4311,7 @@ private:
 			if (image.source == source && image.resource_class == resource_class &&
 			    image.dimension == memory.image_dimension && image.mip_mode == mip &&
 			    image.depth_compare == depth && image.r128 == memory.image_r128 &&
-			    image.atomic64 == atomic64) {
+			    image.atomic64 == atomic64 && image.global == global) {
 				image.cube |= memory.image_cube;
 				Merge(image, op, pc);
 				return i;
@@ -4134,6 +4330,7 @@ private:
 		image.r128           = memory.image_r128;
 		image.cube           = memory.image_cube;
 		image.atomic64       = atomic64;
+		image.global         = global;
 		Merge(image, op, pc);
 		m_info.images.push_back(image);
 		return static_cast<uint32_t>(m_info.images.size() - 1);
@@ -4150,9 +4347,9 @@ private:
 		image.unfiltered_access_only &= op == ValueOpcode::ImageRead || op == ValueOpcode::ImageWrite;
 	}
 
-	uint32_t AddSampler(uint32_t source, uint32_t pc) {
+	uint32_t AddSampler(uint32_t source, uint32_t pc, bool global = false) {
 		for (uint32_t i = 0; i < m_info.samplers.size(); i++) {
-			if (m_info.samplers[i].source == source) {
+			if (m_info.samplers[i].source == source && m_info.samplers[i].global == global) {
 				m_info.samplers[i].first_use_pc = std::min(m_info.samplers[i].first_use_pc, pc);
 				return i;
 			}
@@ -4162,6 +4359,8 @@ private:
 		}
 		m_info.samplers.push_back({source, pc});
 		const auto root = static_cast<uint32_t>(m_info.samplers.size() - 1);
+		m_info.samplers[root].global = global;
+		if (global) return root;
 		const auto* descriptor = Source(source);
 		if (descriptor != nullptr && descriptor->indirect_descriptor) {
 			const auto& sources = descriptor->indirect_descriptor->sources;
@@ -4248,16 +4447,19 @@ private:
 			const auto* indirect = handle == nullptr ? nullptr : FindIndirectDescriptor(*handle);
 			if (indirect != nullptr) {
 				source = indirect->source;
-			} else if (!GetHandle(inst.Arg(0), ValueOpcode::GetBufferResource, 4, flags.pc,
-			               memory.resource * 4u, handle, source)) {
+			} else if (GpuSrtRuntimeBuffer(inst, memory) ||
+			           !GetHandle(inst.Arg(0), ValueOpcode::GetBufferResource, 4, flags.pc,
+			                      memory.resource * 4u, handle, source)) {
 				if (memory.kind != (op == ValueOpcode::ReadConstBuffer ? ResourceKind::ScalarBuffer
 				                                                        : ResourceKind::Buffer) ||
-				    !memory.SupportsIndirectBufferLoad(op)) {
+				    (!memory.SupportsIndirectBufferLoad(op) && !memory.SupportsIndirectBufferWrite(op))) {
 					Fail(flags.pc,
 					     "buffer descriptor is not a valid runtime value; GPU-selected access "
-					     "requires a scalar, raw 8/16-bit, raw DWORD x1/x2/x3/x4, or formatted X load");
+					     "requires a scalar, raw 8/16-bit, raw DWORD x1/x2/x3/x4, or 32-bit formatted load");
 				}
 				m_program.memory_info[flags.index].kind = ResourceKind::IndirectBuffer;
+				// Stores through a run-time V# reach memory outside the bound descriptors.
+				if (BufferAccessOf(op) != BufferAccess::Read) m_program.has_address_writes = true;
 				return;
 			}
 			resource = AddBuffer(source, memory, op, flags.pc);
@@ -4308,12 +4510,29 @@ private:
 			if (std::ranges::max(base) != UINT32_MAX &&
 			    std::ranges::find(bases, base) == bases.end())
 				bases.push_back(base);
+			// GPU-SRT reads user-data pointers in the shader: the host backs them before the draw.
+			std::array<uint32_t, 2> user {};
+			for (uint32_t word = 0; word < user.size(); ++word) {
+				const auto* read = handle->Arg(word).Resolve().TryInstruction();
+				user[word] = read != nullptr && read->GetOpcode() == ValueOpcode::GetUserData &&
+				                     read->Arg(0).GetType() == Type::ScalarReg
+				                 ? RegIndex(read->Arg(0).ScalarRegister())
+				                 : UINT32_MAX;
+			}
+			auto& user_bases = m_info.user_data_bases;
+			if (std::ranges::max(user) != UINT32_MAX &&
+			    std::ranges::find(user_bases, user) == user_bases.end())
+				user_bases.push_back(user);
 			return;
 		}
 
 		if (memory.kind != ResourceKind::Image ||
 		    image_info.resource_class == ImageResourceClass::None) {
 			Fail(flags.pc, "image operation has invalid resource kind");
+		}
+		if (GpuSrtGlobalImage(inst, memory)) {
+			CollectGlobalImage(inst, memory, op, image_info.needs_sampler, flags);
+			return;
 		}
 		handle               = inst.Arg(0).Resolve().TryInstruction();
 		const auto* indirect = handle != nullptr ? FindIndirectDescriptor(*handle) : nullptr;

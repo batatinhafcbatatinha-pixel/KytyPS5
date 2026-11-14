@@ -251,6 +251,22 @@ void DefineDescriptors(EmitterState& state) {
 		if (count == 0) image_types[IR::ImageBindingIndex(*kind)] = &image;
 		count += image.mip_count;
 	}
+	if (std::ranges::any_of(info.images, &IR::ImageResource::global)) {
+		// GPU-SRT samplers share one array next to the image heap.
+		state.sampler_type = state.builder.Type(spv::OpTypeSampler);
+		state.global_sampler_pointer_type =
+		    TypePointer(state, spv::StorageClassUniformConstant, state.sampler_type);
+		const auto array = state.builder.Type(spv::OpTypeArray, state.sampler_type,
+		                                      ConstantU32(state, IR::GlobalSamplerCapacity));
+		state.global_sampler_variable = state.builder.DefineGlobalVariable(
+		    TypePointer(state, spv::StorageClassUniformConstant, array),
+		    spv::StorageClassUniformConstant);
+		state.builder.AddName(state.global_sampler_variable, "global_samplers");
+		state.builder.AddAnnotation(spv::OpDecorate, state.global_sampler_variable,
+		                            spv::DecorationDescriptorSet, IR::ImageHeapSet);
+		state.builder.AddAnnotation(spv::OpDecorate, state.global_sampler_variable,
+		                            spv::DecorationBinding, 1u);
+	}
 	counts[static_cast<size_t>(Kind::Samplers)] = static_cast<uint32_t>(info.samplers.size());
 	counts[static_cast<size_t>(Kind::Gds)] = info.uses_gds;
 	counts[static_cast<size_t>(Kind::SharedMemory)] =
