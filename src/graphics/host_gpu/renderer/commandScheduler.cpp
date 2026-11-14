@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/deviceLossReport.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include <cstdlib>
@@ -89,6 +90,8 @@ CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graph
 	// KYTY_GPU_SRT_LEARN=1.
 	const char* learn = std::getenv("KYTY_GPU_SRT_LEARN");
 	ShaderRecompiler::IR::SetRuntimeLearning(!EarlyComputeEnabled() || (learn != nullptr && learn[0] == '1'));
+	const char* async_submit = std::getenv("KYTY_ASYNC_SUBMIT");
+	m_async_submit           = async_submit == nullptr || async_submit[0] != '0';
 }
 
 bool CommandScheduler::EarlyComputeEnabled() const noexcept {
@@ -169,9 +172,94 @@ void CommandScheduler::Finish() {
 	if (!m_command.IsInvalid()) {
 		Submit();
 	}
+	SubmitQueuedUpTo(UINT64_MAX);
 	m_master.Wait(CurrentTick() - 1);
 	BeginNext();
 	PopPendingOperations();
+}
+
+void CommandScheduler::SubmitToQueue(const SubmitInfo& submit, vk::CommandBuffer buffer, uint64_t tick) {
+	vk::TimelineSemaphoreSubmitInfo timeline_info {};
+	timeline_info.waitSemaphoreValueCount   = submit.num_wait_semaphores;
+	timeline_info.pWaitSemaphoreValues      = submit.wait_ticks.data();
+	timeline_info.signalSemaphoreValueCount = submit.num_signal_semaphores;
+	timeline_info.pSignalSemaphoreValues    = submit.signal_ticks.data();
+
+	vk::SubmitInfo submit_info {};
+	submit_info.pNext                = &timeline_info;
+	submit_info.waitSemaphoreCount   = submit.num_wait_semaphores;
+	submit_info.pWaitSemaphores      = submit.wait_semaphores.data();
+	submit_info.pWaitDstStageMask    = submit.wait_stages.data();
+	submit_info.commandBufferCount   = 1;
+	submit_info.pCommandBuffers      = &buffer;
+	submit_info.signalSemaphoreCount = submit.num_signal_semaphores;
+	submit_info.pSignalSemaphores    = submit.signal_semaphores.data();
+
+	vk::Result result;
+	{
+		Common::LockGuard lock(m_graphics.queue_mutex);
+		result = m_graphics.queue.submit(1, &submit_info, nullptr);
+	}
+	Common::DebugCounters::Add(Common::DebugCounters::Counter::QueueSubmits);
+	if (result != vk::Result::eSuccess) {
+		ReportDeviceLoss(m_graphics, "submit", static_cast<int>(result));
+		EXIT("vkQueueSubmit failed: %s, tick=%" PRIu64 "\n", vk::to_string(result).c_str(), tick);
+	}
+}
+
+void CommandScheduler::SubmitThread(std::stop_token stop) {
+	for (;;) {
+		QueuedSubmit item;
+		{
+			std::unique_lock lock(m_submit_mutex);
+			m_submit_changed.wait(lock, stop, [this] { return !m_submits.empty(); });
+			if (m_submits.empty()) {
+				return;
+			}
+			item = m_submits.front();
+			m_submits.pop_front();
+			m_submit_busy = true;
+		}
+		SubmitToQueue(item.info, item.buffer, item.tick);
+		{
+			std::lock_guard lock(m_submit_mutex);
+			m_submit_busy = false;
+		}
+		m_submit_changed.notify_all();
+	}
+}
+
+// A wait on a queued batch submits it on the waiting thread instead of waiting for the worker.
+void CommandScheduler::SubmitQueuedUpTo(uint64_t tick) {
+	if (!m_submit_thread.joinable()) {
+		return;
+	}
+	std::unique_lock lock(m_submit_mutex);
+	for (;;) {
+		if (m_submit_busy) {
+			m_submit_changed.wait(lock, [this] { return !m_submit_busy; });
+			continue;
+		}
+		if (m_submits.empty() || m_submits.front().tick > tick) {
+			return;
+		}
+		const auto item = m_submits.front();
+		m_submits.pop_front();
+		m_submit_busy = true;
+		lock.unlock();
+		SubmitToQueue(item.info, item.buffer, item.tick);
+		lock.lock();
+		m_submit_busy = false;
+		m_submit_changed.notify_all();
+	}
+}
+
+void CommandScheduler::DrainSubmits() {
+	if (!m_submit_thread.joinable()) {
+		return;
+	}
+	std::unique_lock lock(m_submit_mutex);
+	m_submit_changed.wait(lock, [this] { return m_submits.empty() && !m_submit_busy; });
 }
 
 void CommandScheduler::Wait(uint64_t tick) {
@@ -184,9 +272,11 @@ void CommandScheduler::Wait(uint64_t tick) {
 		// resources are released only at the next GPU operation boundary.
 		const auto submitted_tick = Submit();
 		EXIT_IF(submitted_tick != tick);
+		SubmitQueuedUpTo(tick);
 		m_master.Wait(tick);
 		BeginNext();
 	} else {
+		SubmitQueuedUpTo(tick);
 		m_master.Wait(tick);
 	}
 }
@@ -378,38 +468,22 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	auto&      graphics = m_graphics;
 	EXIT_IF(graphics.queue == nullptr);
 
-	vk::Result result;
-	uint64_t   tick;
-	{
-		Common::LockGuard lock(graphics.queue_mutex);
-		tick = m_master.NextTick();
-		submit.AddSignal(m_master.Handle(), tick);
-
-		vk::TimelineSemaphoreSubmitInfo timeline_info {};
-		timeline_info.waitSemaphoreValueCount   = submit.num_wait_semaphores;
-		timeline_info.pWaitSemaphoreValues      = submit.wait_ticks.data();
-		timeline_info.signalSemaphoreValueCount = submit.num_signal_semaphores;
-		timeline_info.pSignalSemaphoreValues    = submit.signal_ticks.data();
-
-		vk::SubmitInfo submit_info {};
-		submit_info.pNext                = &timeline_info;
-		submit_info.waitSemaphoreCount   = submit.num_wait_semaphores;
-		submit_info.pWaitSemaphores      = submit.wait_semaphores.data();
-		submit_info.pWaitDstStageMask    = submit.wait_stages.data();
-		submit_info.commandBufferCount   = 1;
-		submit_info.pCommandBuffers      = &buffer;
-		submit_info.signalSemaphoreCount = submit.num_signal_semaphores;
-		submit_info.pSignalSemaphores    = submit.signal_semaphores.data();
-
-		result = graphics.queue.submit(1, &submit_info, nullptr);
+	const uint64_t tick = m_master.NextTick();
+	submit.AddSignal(m_master.Handle(), tick);
+	// The GPU thread hands its batches to the submit worker: vkQueueSubmit costs it ~28 us each.
+	if (m_async_submit && GuestGpu::IsGpuThread()) {
+		if (!m_submit_thread.joinable()) {
+			m_submit_thread = std::jthread([this](std::stop_token stop) { SubmitThread(stop); });
+		}
+		{
+			std::lock_guard lock(m_submit_mutex);
+			m_submits.push_back({submit, buffer, tick});
+		}
+		m_submit_changed.notify_all();
+	} else {
+		DrainSubmits();
+		SubmitToQueue(submit, buffer, tick);
 	}
-	Common::DebugCounters::Add(Common::DebugCounters::Counter::QueueSubmits);
-
-	if (result != vk::Result::eSuccess) {
-		ReportDeviceLoss(m_graphics, "submit", static_cast<int>(result));
-		EXIT("vkQueueSubmit failed: %s, tick=%" PRIu64 "\n", vk::to_string(result).c_str(), tick);
-	}
-
 	m_command.m_buffer = nullptr;
 	return tick;
 }
