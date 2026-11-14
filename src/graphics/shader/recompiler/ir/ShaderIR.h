@@ -49,6 +49,8 @@ inline constexpr uint32_t GpuSrtAutoParts    = 1u | 2u | 8u | 16u;
 // Whether programs are learned (the default mode), and a tag of the mode for stored programs.
 [[nodiscard]] bool     GpuSrtLearning();
 [[nodiscard]] uint32_t GpuSrtStoreTag();
+// Whether the buffer cache should start the host view (something may read through it).
+[[nodiscard]] bool     GpuSrtHostViewWanted();
 [[nodiscard]] bool IsRuntimeProgram(uint64_t hash);
 // GPU thread: the descriptor walk of program waited ms for bytes the GPU wrote.
 void NoteDescriptorWait(uint64_t program, double ms);
@@ -594,6 +596,7 @@ struct Bindings {
 	uint64_t descriptor_mask = 0;
 	uint32_t push_data_start_dword = PushData::NoStart;
 	uint32_t dispatch_thread_dword = PushData::NoStart;
+	uint32_t ray_query_dword       = PushData::NoStart; // Device address of the context.
 	uint32_t memory_offset_dword = 0;
 
 	// Packed 8-bit binding offsets, then each binding's bound range in bytes: OpArrayLength
@@ -629,6 +632,7 @@ struct ShaderInfo {
 	std::vector<SampledResourcePair> sampled_pairs;
 	std::vector<std::array<uint32_t, 2>> address_bases; // Flattened SRT slots of global bases.
 	std::vector<std::array<uint32_t, 2>> user_data_bases; // User-data registers of global bases.
+	std::array<uint32_t, 2>          ray_query_tlas {}; // Flattened SRT slots of the TLAS header.
 	std::vector<StageInput>          inputs;
 	std::vector<StageOutput>         outputs;
 	std::vector<uint32_t>            user_data_registers;
@@ -647,6 +651,7 @@ struct ShaderInfo {
 	bool                            bvh                           = false;
 	bool                            bvh8                          = false;
 	bool                            bvh_stack                     = false;
+	bool                            ray_query                     = false;
 	bool                            subgroup_ballot               = false;
 	bool                            subgroup_vote                 = false;
 	bool                            subgroup_barrier              = false;

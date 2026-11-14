@@ -127,15 +127,6 @@ void BufferCache::ChangeRegister(BufferId id) {
 		for (uint64_t i = 0; i < size_pages; ++i) {
 			addresses.push_back(buffer.BufferDeviceAddress() + (i << CACHING_PAGEBITS));
 		}
-		{
-			std::lock_guard lock(m_bda_sync_mutex);
-			m_dma_accessed.ForEachInRange(
-			    buffer.CpuAddress(), buffer.Size(), [&](uint64_t begin, uint64_t end) {
-				    for (auto address = begin; address < end; address += CACHING_PAGESIZE) {
-					    addresses[buffer.Offset(address) >> CACHING_PAGEBITS] += BDA_ACCESSED;
-				    }
-			    });
-		}
 		if (HostViewEnabled()) {
 			WriteBdaEntries(buffer.CpuAddress(), buffer.CpuAddress() + buffer.Size());
 		} else {
@@ -1081,98 +1072,12 @@ void BufferCache::QueueBdaSync(uint64_t vaddr, uint64_t size, bool is_write) {
 				      m_memory_tracker.IsRegionGpuModified(page, CACHING_PAGESIZE))) {
 					m_gpu_owned.Subtract(page, CACHING_PAGESIZE);
 				}
-				m_bda_sync.Add(page, CACHING_PAGESIZE);
 			}
 		}
-		m_bda_sync_pending.store(true, std::memory_order_release);
 	}
-	if (!is_write) {
-		m_bda_sync.Add(begin, end - begin);
-		m_bda_sync_pending.store(true, std::memory_order_release);
-		return;
-	}
-	m_dma_accessed.ForEachInRange(begin, end - begin, [this](uint64_t first, uint64_t last) {
-		m_bda_sync.Add(first, last - first);
-		m_bda_sync_pending.store(true, std::memory_order_release);
-	});
-}
-
-void BufferCache::MarkDmaAccess(const RangeSet& pages) {
-	if (HostViewEnabled()) {
-		// Host-view entries carry the accessed tag, so a fault bit is a store or an unbacked page.
-		RangeSet unbacked;
-		pages.ForEach([&](uint64_t begin, uint64_t end) {
-			for (auto address = begin; address < end; address += CACHING_PAGESIZE) {
-				if (!GuestRange {address, CACHING_PAGESIZE}.Valid()) continue;
-				bool owned = false;
-				{
-					std::lock_guard lock(m_bda_sync_mutex);
-					owned = m_gpu_owned.Contains(address, CACHING_PAGESIZE);
-				}
-				// The store reached the GPU-owned buffer, or the page holds GPU bytes.
-				if (owned || m_memory_tracker.IsRegionGpuModified(address, CACHING_PAGESIZE)) continue;
-				if (HostAddress(address) == 0) {
-					unbacked.Add(address, CACHING_PAGESIZE);
-					continue;
-				}
-				const auto* page_owner = m_page_table.Find(address >> PageTable::kPageBits);
-				const bool  device_entry = page_owner != nullptr && *page_owner &&
-				                           !m_memory_tracker.IsRegionCpuModified(address, CACHING_PAGESIZE);
-				if (device_entry) {
-					// Only a store faults through a tagged cache-buffer entry: the buffer holds the
-					// newest bytes now.
-					auto& owner_buffer = m_slot_buffers[*page_owner];
-					(void)SynchronizeBuffer(owner_buffer, address, CACHING_PAGESIZE, true, false);
-					m_gpu_modified_ranges.Add(address, CACHING_PAGESIZE);
-					std::lock_guard lock(m_bda_sync_mutex);
-					m_gpu_owned.Add(address, CACHING_PAGESIZE);
-					continue;
-				}
-				// A read or store through guest memory: (re)load the page into a cache buffer, whose
-				// upload sends later reads there (UploadCopies).
-				m_memory_tracker.MarkRegionAsCpuModified(address, CACHING_PAGESIZE);
-				auto& buffer = m_slot_buffers[FindBuffer(address, CACHING_PAGESIZE)];
-				(void)SynchronizeBuffer(buffer, address, CACHING_PAGESIZE, false, false);
-			}
-		});
-		if (unbacked.Empty()) return;
-		MarkDmaAccessUnbacked(unbacked);
-		return;
-	}
-	MarkDmaAccessUnbacked(pages);
-}
-
-void BufferCache::MarkDmaAccessUnbacked(const RangeSet& pages) {
-	{
-		std::lock_guard lock(m_bda_sync_mutex);
-		pages.ForEach([this](uint64_t begin, uint64_t end) {
-			m_dma_accessed.Add(begin, end - begin);
-			m_bda_sync.Add(begin, end - begin);
-		});
-		m_bda_sync_pending.store(true, std::memory_order_release);
-	}
-	RangeSet                       unbacked;
-	std::vector<vk::DeviceAddress> entries;
-	pages.ForEach([&](uint64_t begin, uint64_t end) {
-		entries.clear();
-		for (auto address = begin; address < end; address += CACHING_PAGESIZE) {
-			const auto* owner = m_page_table.Find(address >> PageTable::kPageBits);
-			if (owner == nullptr || !*owner) {
-				LOGF("Accessed non-GPU cached memory at 0x%016" PRIx64 "\n", address);
-				unbacked.Add(address, CACHING_PAGESIZE);
-				entries.push_back(0);
-				continue;
-			}
-			const auto& buffer = m_slot_buffers[*owner];
-			entries.push_back(buffer.BufferDeviceAddress() + buffer.Offset(address) + BDA_ACCESSED);
-		}
-		if (!unbacked.Contains(begin, end - begin)) {
-			WriteDataBuffer(m_bda_pagetable_buffer, PageIndex(begin) * sizeof(vk::DeviceAddress),
-			                entries.data(), entries.size() * sizeof(vk::DeviceAddress));
-		}
-	});
-	unbacked.ForEach(
-	    [this](uint64_t start, uint64_t end) { (void)FindBuffer(start, end - start); });
+	// Every CPU-written BDA page is uploaded again before the next DMA draw.
+	m_bda_sync.Add(begin, end - begin);
+	m_bda_sync_pending.store(true, std::memory_order_release);
 }
 
 void BufferCache::SynchronizeBda(const RangeSet& mapped) {
@@ -1231,7 +1136,7 @@ void BufferCache::SynchronizeBda(const RangeSet& mapped) {
 }
 
 void BufferCache::InitHostView() {
-	if (!ShaderRecompiler::IR::GpuSrtEnabled()) {
+	if (!ShaderRecompiler::IR::GpuSrtHostViewWanted()) {
 		return;
 	}
 	if (!m_graphics.external_memory_host_enabled) {
@@ -1373,19 +1278,17 @@ void BufferCache::WriteBdaEntries(uint64_t begin, uint64_t end) {
 		const bool  cached = owner != nullptr && *owner && !m_slot_buffers[*owner].is_deleted;
 		vk::DeviceAddress entry = 0;
 		// The cache buffer when its copy is current (GPU-owned, or no CPU write since its upload);
-		// otherwise guest memory itself, untagged, so the first access asks for a buffer.
+		// otherwise guest memory itself.
 		if (cached && (owned.Contains(address, CACHING_PAGESIZE) ||
 		               !m_memory_tracker.IsRegionCpuModified(address, CACHING_PAGESIZE))) {
 			const auto& buffer = m_slot_buffers[*owner];
-			entry = buffer.BufferDeviceAddress() + buffer.Offset(address) + BDA_ACCESSED;
+			entry = buffer.BufferDeviceAddress() + buffer.Offset(address);
 		} else if (const auto host = HostAddress(address); host != 0) {
 			entry = host;
 		} else if (cached) {
-			// Private memory outside the backing keeps the fault-driven cache buffer path.
+			// Private memory outside the backing keeps the cache buffer path.
 			const auto& buffer = m_slot_buffers[*owner];
-			std::lock_guard lock(m_bda_sync_mutex);
-			entry = buffer.BufferDeviceAddress() + buffer.Offset(address) +
-			        (m_dma_accessed.Contains(address, CACHING_PAGESIZE) ? BDA_ACCESSED : 0);
+			entry = buffer.BufferDeviceAddress() + buffer.Offset(address);
 		}
 		const auto index = PageIndex(address);
 		auto [shadow, inserted] = m_pt_shadow.try_emplace(index, 0);

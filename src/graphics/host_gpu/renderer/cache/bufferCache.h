@@ -39,9 +39,6 @@ public:
 	static constexpr uint64_t CACHING_NUMPAGES  = (LOWER_ADDRESS_SIZE + LibKernel::Memory::kExtendedMemorySize) >> CACHING_PAGEBITS;
 	static constexpr uint64_t BDA_PAGETABLE_SIZE =
 	    CACHING_NUMPAGES * sizeof(vk::DeviceAddress);
-	// Tags the BDA page-table entries of pages a DMA shader accessed; an access to another page
-	// records a fault.
-	static constexpr vk::DeviceAddress BDA_ACCESSED = 1;
 
 	static constexpr uint64_t PageIndex(uint64_t address) {
 		return (address < LOWER_ADDRESS_SIZE
@@ -97,13 +94,10 @@ public:
 	void               MarkColorMetadataChecked(uint64_t vaddr, uint64_t size, uint32_t keys);
 	[[nodiscard]] bool IsColorMetadataChecked(uint64_t vaddr, uint64_t size, uint32_t keys) const;
 	void               ProcessFaultBuffer();
-	// Tags fault-scan pages as DMA-accessed and queues them; creates buffers for unbacked ones.
-	void MarkDmaAccess(const RangeSet& pages);
-	void MarkDmaAccessUnbacked(const RangeSet& pages);
 	// Uploads the CPU-dirty bytes of the queued ranges `mapped` covers behind one barrier pair.
 	void SynchronizeBda(const RangeSet& mapped);
 	// Queue after the range's state change becomes visible, or a drain could consume it first.
-	// A write queues only the pages a DMA shader accessed.
+	// is_write: a CPU write (the host view keeps the cache-buffer copy mapped and refreshes it).
 	void               QueueBdaSync(uint64_t vaddr, uint64_t size, bool is_write = false);
 	// Guest memory holds the newest bytes of the range, such as a downloaded image's: GPU writes
 	// cached there are older and are dropped, so the next use reads guest memory.
@@ -258,8 +252,6 @@ private:
 	std::vector<std::pair<uint64_t, vk::DeviceAddress>> m_pt_queue;
 	// Set after m_bda_sync grows, so draws with nothing queued skip SynchronizeBda.
 	std::atomic<bool>                                 m_bda_sync_pending {false};
-	// Pages DMA shaders accessed, guarded by m_bda_sync_mutex.
-	RangeSet                                          m_dma_accessed;
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;
 	StreamBuffer                                      m_download_buffer;
