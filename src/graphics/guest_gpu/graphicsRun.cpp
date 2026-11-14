@@ -1,4 +1,5 @@
 #include "graphics/guest_gpu/graphicsRun.h"
+#include "common/fpsProbe.h" // FPSPROBE
 
 #include "common/assert.h"
 #include "common/debugCounters.h"
@@ -486,6 +487,7 @@ void GuestGpu::ThreadRun(void* data) {
 }
 
 bool GuestGpu::Process(Submission& submission) {
+	FpsProbe::Scope fps_scope(FpsProbe::Process); // FPSPROBE
 	auto& cp = GetProcessor(submission.queue_id);
 
 	cp.BufferInit();
@@ -708,7 +710,8 @@ void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t 
 // The CPU reads these writes back soon: submitting them now, with their downloads, lets the
 // host GPU run them while the following commands are recorded.
 static void SubmitReadBackWrites(RenderContext& renderer) {
-	if (renderer.GetBufferCache().HasEagerWrites()) {
+	static const bool disabled = std::getenv("KYTY_NO_EARLY") != nullptr; // ABTEST
+	if (!disabled && renderer.GetBufferCache().HasEagerWrites()) {
 		renderer.GetCommandScheduler().Flush();
 	}
 }

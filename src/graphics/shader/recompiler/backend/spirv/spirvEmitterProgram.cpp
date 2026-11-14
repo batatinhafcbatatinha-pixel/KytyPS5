@@ -677,6 +677,7 @@ void EmitProgram(EmitterState& state) {
 		high.dispatcher_spills      = &dispatch.spills[1];
 	}
 	DefineGetBdaPointer(state);
+	DefineGlobalMapLookup(state);
 	DefineIndirectBufferLoads(ctx);
 	DefineBvhIntersect(state);
 	DefineTrinityFunctions(state);

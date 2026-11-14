@@ -47,6 +47,10 @@ static uint32_t LoadFlattenedSrt(EmitterState& state, uint32_t index) {
 	return value;
 }
 
+uint32_t EmitLoadFlattenedSrtWord(EmitterState& state, uint32_t index) {
+	return LoadFlattenedSrt(state, ConstantU32(state, index));
+}
+
 uint32_t EmitImageHeapEntry(EmitterState& state, uint32_t key, uint32_t mapping_offset) {
 	const auto Mapping = [&](uint32_t word) {
 		return LoadFlattenedSrt(state, ConstantU32(state, mapping_offset + word));

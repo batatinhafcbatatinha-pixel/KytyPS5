@@ -167,7 +167,11 @@ uint32_t LoadImageDescriptor(EmitterState& state, uint32_t resource, uint32_t mi
 	const auto kind = *IR::DescriptorBindingForImage(resource_info);
 	state.builder.AddFunction(spv::OpLoad, ImageDescriptorDefinition(state, resource_info, kind).type,
 	                          image, pointer);
-	if (array_index != 0u) {
+	// GPU-SRT global elements are subgroup-uniform (broadcast keys and lookups).
+	if (array_index != 0u && resource_info.global) {
+		state.builder.RequireCapability(spv::CapabilitySampledImageArrayDynamicIndexing);
+	}
+	if (array_index != 0u && !resource_info.global) {
 		DecorateNonUniformDescriptor(state, image,
 		    IR::ImageBindingResourceClass(kind) == IR::ImageResourceClass::Storage
 		        ? spv::CapabilityStorageImageArrayNonUniformIndexing
@@ -205,7 +209,7 @@ uint32_t MakeSampledImage(EmitterState& state, uint32_t resource, uint32_t sampl
 	}
 	state.builder.AddFunction(spv::OpSampledImage, definition.sampled_type, sampled_image, image,
 	                          sampler_id);
-	if (array_index != 0u || sampler_dynamic) {
+	if ((array_index != 0u || sampler_dynamic) && !image_resource.global) {
 		DecorateNonUniformDescriptor(state, sampled_image, spv::CapabilitySampledImageArrayNonUniformIndexing);
 	}
 	return sampled_image;

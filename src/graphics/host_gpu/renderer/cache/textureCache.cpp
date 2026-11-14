@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "common/fpsProbe.h" // FPSPROBE
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -18,6 +19,11 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <string> // FPSPROBE
+#include <map> // FPSPROBE
+#include <cstdlib> // FPSPROBE
+#include <cstdio> // FPSPROBE
+#include <chrono> // FPSPROBE
 #include <array>
 #include <bit>
 #include <cinttypes>
@@ -30,6 +36,30 @@
 #include <vulkan/vulkan_format_traits.hpp>
 
 namespace Libs::Graphics {
+namespace {
+// FPSPROBE: texture upload reasons (env KYTY_PROFILE_GPU_WAITS).
+void ProbeUpload(int mark, bool buffer_modified, uint32_t width, uint32_t height, uint32_t format, uint64_t bytes) {
+	static const bool enabled = std::getenv("KYTY_PROFILE_GPU_WAITS") != nullptr;
+	if (!enabled) return;
+	static std::map<std::string, std::pair<uint64_t, uint64_t>> rows;
+	static auto last = std::chrono::steady_clock::now();
+	char key[128];
+	std::snprintf(key, sizeof(key), "%s mark=%d %ux%u fmt=%u", buffer_modified ? "buf" : "cpu", mark, width, height, format);
+	auto& row = rows[key];
+	row.first++;
+	row.second += bytes;
+	const auto now = std::chrono::steady_clock::now();
+	if (std::chrono::duration<double>(now - last).count() < 5.0) return;
+	for (const auto& [name, value]: rows) {
+		if (value.second >= (uint64_t {1} << 20u))
+			std::printf("[texup] %s count=%llu MB=%.1f\n", name.c_str(), (unsigned long long)value.first, value.second / 1048576.0);
+	}
+	std::fflush(stdout);
+	rows.clear();
+	last = now;
+}
+} // namespace
+
 
 namespace {
 
@@ -531,7 +561,7 @@ void TextureCache::CopyImage(ImageId destination_id, ImageId source_id) {
 	destination.RefreshComplete();
 	if (source.IsBufferModified()) {
 		if (source.info.data == destination.info.data) {
-			destination.MarkBufferModified();
+			destination.MarkBufferModified(); destination.probe_mark = 1; // FPSPROBE
 		}
 		return;
 	}
@@ -701,7 +731,7 @@ bool Publish(TextureCache& cache, Image& image) {
 	    cache.m_buffer_cache.ObtainBuffer(image.info.data.address, image.info.data.size, true);
 	cache.DownloadImage(image, *buffer, offset, image.info.data.size, image.info.resources.levels);
 	image.ClearGpuModified();
-	image.MarkBufferModified();
+	image.MarkBufferModified(); image.probe_mark = 2; // FPSPROBE
 	return true;
 }
 
@@ -718,7 +748,7 @@ void Resolve(TextureCache& cache, ImageId cached_id, ImageId merged_id) {
 			return;
 		}
 		if (merged) {
-			merged->MarkBufferModified();
+			merged->MarkBufferModified(); merged->probe_mark = 3; // FPSPROBE
 		}
 	}
 	cached.binding.needs_rebind |= cached.binding.is_bound || cached.binding.is_target;
@@ -967,6 +997,7 @@ void TextureCache::InitializeImage(ImageId id) {
 	}
 	const bool upload = image.IsBufferModified() || image.IsCpuDirty();
 	if (upload) {
+		ProbeUpload(image.IsBufferModified() ? image.probe_mark : 0, image.IsBufferModified(), image.info.extent.width, image.info.extent.height, static_cast<uint32_t>(image.backing.format), image.info.data.size); // FPSPROBE
 		const auto [source, source_offset] =
 		    m_buffer_cache.ObtainBufferForImage(image.info.data.address, image.info.data.size);
 		if (source == nullptr) {
@@ -1143,6 +1174,7 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 }
 
 void TextureCache::RefreshImage(ImageId id) {
+	FpsProbe::Scope fps_scope(FpsProbe::TexRefresh); // FPSPROBE
 	auto& image = m_slot_images[id];
 	if (image.depth_id &&
 	    (m_slot_images[image.depth_id].info.metadata.stencil_compressed ||
@@ -1315,7 +1347,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			auto& inserted = m_slot_images[result];
 			if (m_buffer_cache.HasGpuDirtyBytes(inserted.info.data.address,
 			                                    inserted.info.data.size)) {
-				inserted.MarkBufferModified();
+				inserted.MarkBufferModified(); inserted.probe_mark = 4; // FPSPROBE
 			}
 		}
 		auto& image = m_slot_images[result];
@@ -1866,7 +1898,7 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size) {
 			return;
 		}
 		image.ClearGpuModified();
-		image.MarkBufferModified();
+		image.MarkBufferModified(); image.probe_mark = 5; // FPSPROBE
 	});
 }
 

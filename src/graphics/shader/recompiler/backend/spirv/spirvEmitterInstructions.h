@@ -246,12 +246,14 @@ void                  EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& in
 uint32_t              EmitGetShaderBase(ValueEmitContext& ctx);
 uint32_t              EmitReadRealtimeClock(ValueEmitContext& ctx, const IR::Inst& inst);
 inline constexpr auto EmitGetSrtResource     = EmitVoid;
-inline constexpr auto EmitGetBufferResource  = EmitGetSrtResource;
+// A V# that run-time scalar constant loads read translates its base page once (GPU-SRT).
+void                  EmitGetBufferResource(ValueEmitContext& ctx, const IR::Inst& inst);
 uint32_t              EmitGetBufferResourceIndex(ValueEmitContext& ctx, const IR::Inst& inst);
 inline constexpr auto EmitGetAddressResource = EmitGetSrtResource;
 inline constexpr auto EmitGetScratchResource = EmitGetSrtResource;
-inline constexpr auto EmitGetImageResource   = EmitGetSrtResource;
-inline constexpr auto EmitGetSamplerResource = EmitGetSrtResource;
+// GPU-SRT global handles look their descriptor up once, where the handle is defined.
+void                  EmitGetImageResource(ValueEmitContext& ctx, const IR::Inst& inst);
+void                  EmitGetSamplerResource(ValueEmitContext& ctx, const IR::Inst& inst);
 inline constexpr auto EmitMakeImageAddress   = EmitGetSrtResource;
 void                  EmitLoadMemory(ValueEmitContext& ctx, const IR::Inst& inst);
 void                  EmitStoreMemory(ValueEmitContext& ctx, const IR::Inst& inst);

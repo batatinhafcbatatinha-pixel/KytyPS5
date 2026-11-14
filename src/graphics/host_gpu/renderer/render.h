@@ -135,6 +135,8 @@ namespace Pssr {
 struct Request;
 }
 
+void BackUserDataBases(RenderContext& context, const ShaderStageRuntime& stage);
+
 class RenderExecutor {
 public:
 	explicit RenderExecutor(RenderContext& context): m_context(context) {}
@@ -167,6 +169,7 @@ private:
 		PreparedBindings                pixel;
 	};
 
+	void BackDrawAddressBases(const ShaderStageRuntime& stage);
 	void PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
 	                             std::span<RenderColorInfo> colors);
 	void ResolveRenderColorTarget(CommandBuffer& buffer, RenderColorInfo& target,

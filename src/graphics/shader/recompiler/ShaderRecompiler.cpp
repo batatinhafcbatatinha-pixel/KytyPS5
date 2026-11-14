@@ -1,4 +1,6 @@
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
+#include <cstdio> // PROBE
+#include <cstdlib> // PROBE
 #include "graphics/shader/recompiler/ShaderCalls.h"
 #include "graphics/shader/recompiler/Tessellation.h"
 
@@ -563,8 +565,11 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 
 	const auto& cfg = *selected_cfg;
 	Frontend::EmbeddedFetchPlan embedded_fetch;
+	// With the GPU-side SRT the shader runs its own fetch: it loads the vertex buffer descriptors
+	// from the tables at run time, so no host vertex input replaces it.
 	if ((options.stage == ShaderType::Vertex || options.stage == ShaderType::Local) &&
-	    options.input_info.vertex->has_dynamic_vertex_fetch) {
+	    options.input_info.vertex->has_dynamic_vertex_fetch &&
+	    !IR::GpuSrtPartEnabled(IR::GpuSrtVertexFetch)) {
 		embedded_fetch = DetectEmbeddedVertexFetch(
 		    decoded, *options.input_info.vertex, options.user_data_base,
 		    static_cast<uint32_t>(options.user_data.size()), options.wave_size);
@@ -657,10 +662,13 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 				                          : 0u;
 			} else if (op == IR::ValueOpcode::GetImageResource) {
 				const auto resource = inst.Flags<uint32_t>();
+				// GPU-SRT global images read their T# words in the shader.
+				if (resource < ir.info.images.size() && ir.info.images[resource].global) continue;
 				first = resource < ir.info.images.size() &&
 				                ir.info.images[resource].indirect_root == resource ? 1u : 0u;
 			} else if (op == IR::ValueOpcode::GetSamplerResource) {
 				const auto resource = inst.Flags<uint32_t>();
+				if (resource < ir.info.samplers.size() && ir.info.samplers[resource].global) continue;
 				first = resource < ir.info.samplers.size() &&
 				                !ir.info.samplers[resource].indirect_resources.empty() ? 1u : 0u;
 			} else {
@@ -681,11 +689,28 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 		ir_dump = MakeIrDump(translated.cfg_dump, ir);
 		LOGF("ShaderRecompiler %s native IR:\n%s", stage, ir_dump.c_str());
 	}
+	if (const char* dump_hash = std::getenv("KYTY_DUMP_HASH"); // PROBE (temporary)
+	    dump_hash != nullptr && std::strtoull(dump_hash, nullptr, 16) == ir.shader_hash) {
+		const auto text = MakeIrDump(translated.cfg_dump, ir);
+		const auto path = std::string("D:/ps5/kyty/max-state/ir_") + dump_hash + ".txt";
+		if (auto* file = std::fopen(path.c_str(), "wb")) {
+			std::fwrite(text.data(), 1, text.size(), file);
+			std::fclose(file);
+		}
+	}
 
 	LOGF("ShaderRecompiler %s phase begin: hash=0x%016" PRIx64 " SPIR-V EmitProgram\n", stage,
 	     ir.shader_hash);
 	auto spirv = Spirv::EmitProgram(ir, options.input_info, push_data_start_dword, *options.profile,
 	                                options.emit_debug_info);
+	if (const char* dump_dir = std::getenv("KYTY_DUMP_SPIRV"); dump_dir != nullptr) { // PROBE (temporary)
+		char name[64];
+		std::snprintf(name, sizeof(name), "/%016llx.spv", static_cast<unsigned long long>(ir.shader_hash));
+		if (auto* file = std::fopen((std::string(dump_dir) + name).c_str(), "wb")) {
+			std::fwrite(spirv.data(), sizeof(uint32_t), spirv.size(), file);
+			std::fclose(file);
+		}
+	}
 	LOGF("ShaderRecompiler %s phase end: hash=0x%016" PRIx64 " SPIR-V EmitProgram words=%" PRIu64
 	     " wave_size=%u elapsed_ms=%" PRIu64 "\n",
 	     stage, ir.shader_hash, static_cast<uint64_t>(spirv.size()), ir.wave_size,

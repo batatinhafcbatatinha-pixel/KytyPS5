@@ -322,7 +322,7 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				info.function_scratch = true;
 				info.function_lds |= kind == ResourceKind::FlatLocal &&
 				                     program.stage != ShaderType::Compute && program.stage != ShaderType::Mesh;
-			} else if (address_access == AddressAccess::Write) {
+			} else if (address_access == AddressAccess::Write && !HostBdaWrites()) {
 				return Fail("writable FLAT/GLOBAL addresses require GPU ownership tracking");
 			} else {
 				info.coherent_buffers |= memory.coherent;
@@ -605,6 +605,7 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
 	const auto uses_mapping = [](const auto& resource) {
 		return resource.indirect_root != UINT32_MAX;
 	};
+	// GPU-SRT global images and samplers read their flag and host entry from the flattened SRT.
 	info.uses_flattened_srt |= std::ranges::any_of(info.buffers, uses_mapping) ||
 	                           std::ranges::any_of(info.images, uses_mapping) ||
 	                           std::ranges::any_of(info.samplers, uses_mapping);

@@ -114,6 +114,16 @@ public:
 
 	[[nodiscard]] uint64_t GetBackingSize() const { return m_size; }
 
+	// Needs no lock: page entries are atomic.
+	[[nodiscard]] bool BackingOffset(uint64_t vaddr, uint64_t* offset) const {
+		const auto entry = LoadPage(vaddr >> PageBits);
+		if (entry == 0) {
+			return false;
+		}
+		*offset = (uint64_t {entry - 1u} << PageBits) + (vaddr & PageMask);
+		return true;
+	}
+
 	void ZeroRange(uint64_t backing_offset, uint64_t size) {
 		std::memset(m_backing_base + backing_offset, 0, size);
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
@@ -499,6 +509,9 @@ public:
 	[[nodiscard]] uint64_t GetGranularity() const { return m_granularity; }
 	[[nodiscard]] uint64_t GetBackingBase() const { return m_backing->GetBackingBase(); }
 	[[nodiscard]] uint64_t GetBackingSize() const { return m_backing->GetBackingSize(); }
+	[[nodiscard]] bool     BackingOffset(uint64_t vaddr, uint64_t* offset) const {
+		return m_backing->BackingOffset(vaddr, offset);
+	}
 
 	void ZeroBacking(uint64_t backing_offset, uint64_t size) {
 		m_backing->ZeroRange(backing_offset, size);

@@ -9,6 +9,8 @@
 
 #include <atomic>
 #include <compare>
+#include <mutex>
+#include <vector>
 #include <limits>
 #include <optional>
 #include <span>
@@ -99,6 +101,7 @@ public:
 	void               ClearGpuModified() noexcept { m_gpu_modified = false; }
 
 	[[nodiscard]] bool IsBufferModified() const noexcept { return m_buffer_modified; }
+	int                probe_mark = 0; // FPSPROBE
 	void               MarkBufferModified() noexcept {
 		m_buffer_modified = true;
 		HeapChanged();
@@ -125,8 +128,17 @@ public:
 	void HeapChanged() const noexcept {
 		if (heap_refs.load(std::memory_order_relaxed) != 0u) {
 			heap_epoch.fetch_add(1u, std::memory_order_relaxed);
+			// Global views (GPU-SRT) revisit only the elements of changed images.
+			if (heap_changes_enabled.load(std::memory_order_relaxed)) {
+				std::lock_guard lock(heap_changes_mutex);
+				heap_changes.push_back(serial);
+			}
 		}
 	}
+
+	static inline std::atomic<bool>     heap_changes_enabled {false};
+	static inline std::mutex            heap_changes_mutex;
+	static inline std::vector<uint64_t> heap_changes; // Image::serial of changed heap images.
 
 	static inline std::atomic<uint64_t> heap_epoch {0};
 	static inline std::atomic<uint64_t> serials {0};

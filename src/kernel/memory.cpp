@@ -804,6 +804,18 @@ bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return g_guest_address_space->TryReadBacking(vaddr, data, size);
 }
 
+uint64_t GuestBackingBase() {
+	return g_guest_address_space != nullptr ? g_guest_address_space->GetBackingBase() : 0;
+}
+
+uint64_t GuestBackingSize() {
+	return g_guest_address_space != nullptr ? g_guest_address_space->GetBackingSize() : 0;
+}
+
+bool GuestBackingOffset(uint64_t vaddr, uint64_t* offset) {
+	return g_guest_address_space != nullptr && g_guest_address_space->BackingOffset(vaddr, offset);
+}
+
 bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 	if (g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size)) {
 		if (!Graphics::GuestGpu::IsGpuThread()) {
@@ -858,6 +870,26 @@ void InvalidateMemory(uint64_t vaddr, uint64_t size) {
 void InstallGpuResources(Graphics::RenderContext* resources) noexcept {
 	EXIT_IF(resources != nullptr && g_gpu_resources != nullptr);
 	g_gpu_resources = resources;
+}
+
+bool ReadGpuTable(uint64_t vaddr, void* data, uint64_t size) {
+	if (size == 0) {
+		return true;
+	}
+	if (g_gpu_resources == nullptr || !IsGpuAddressRange(vaddr, size) ||
+	    !Graphics::GuestGpu::IsGpuThread()) {
+		return false;
+	}
+	return g_gpu_resources->GetBufferCache().ReadTable(vaddr, size, data);
+}
+
+bool TrySpeculativeWalkerLoad(uint64_t vaddr, uint32_t* value) noexcept {
+	return g_gpu_resources != nullptr && Graphics::GuestGpu::IsGpuThread() &&
+	       g_gpu_resources->GetBufferCache().TrySpeculativeWalkerLoad(vaddr, *value);
+}
+
+void DescribeGpuPage(uint64_t vaddr) noexcept { // PROBE
+	if (g_gpu_resources != nullptr) g_gpu_resources->GetBufferCache().DescribePage(vaddr);
 }
 
 bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept {

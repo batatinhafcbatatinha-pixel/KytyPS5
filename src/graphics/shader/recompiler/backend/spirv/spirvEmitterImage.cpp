@@ -4,9 +4,24 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdlib>
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 namespace {
+
+// A sampler of the GPU-SRT global sampler array (IR::ImageHeapSet binding 1).
+uint32_t LoadGlobalSampler(EmitterState& state, uint32_t index) {
+	const auto pointer = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAccessChain, state.global_sampler_pointer_type, pointer,
+	                          state.global_sampler_variable, index);
+	const auto sampler = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, state.sampler_type, sampler, pointer);
+	state.builder.RequireExtension("SPV_EXT_descriptor_indexing");
+	state.builder.RequireCapability(spv::CapabilityShaderNonUniform);
+	state.builder.RequireCapability(spv::CapabilitySampledImageArrayNonUniformIndexing);
+	// Global sampler indices are subgroup-uniform: no NonUniform decoration.
+	return sampler;
+}
 
 uint32_t DmaskComponentIndex(uint32_t dmask, uint32_t component) {
 	uint32_t index = 0;
@@ -669,6 +684,28 @@ auto EmitImageAccess(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t resul
 	const auto& image = state.program.info.images.at(mem.resource);
 	if (image.indirect_root != mem.resource) return emit(mem.resource, 0u);
 	const auto* handle = inst.Arg(0).ResolveInstruction();
+	if (image.global) {
+		// GPU-SRT: the T# words select a heap element and its kind through the global map.
+		if (handle == nullptr || handle->NumArgs() < 8u ||
+		    image.indirect_resources.size() != IR::GlobalImageArms + 1u) {
+			ctx.Fail(inst, "has an invalid global image");
+		}
+		const auto entry = ctx.Def(inst.Arg(0));
+		const auto element = Binary(state, spv::OpBitwiseAnd, TypeU32(state), entry,
+		                            ConstantU32(state, (1u << IR::ImageHeapKindShift) - 1u));
+		// Arms alternate plain and cube; only 2D arrays can hold cubes.
+		const bool cubes = image.dimension == ImageDimension::Dim2DArray;
+		// TEST (temporary): KYTY_ONE_ARM=1 emits only the Float plain arm.
+		static const bool one_arm = std::getenv("KYTY_ONE_ARM") != nullptr;
+		if (one_arm) return emit(image.indirect_resources[1], element);
+		auto arm = Binary(state, spv::OpShiftRightLogical, TypeU32(state), entry,
+		                  ConstantU32(state, IR::ImageHeapKindShift + (cubes ? 0u : 1u)));
+		return EmitIndexSwitch(state, arm, cubes ? IR::GlobalImageArms : IR::GlobalImageArms / 2u,
+		                       result_type, [&](uint32_t index) {
+			                       return emit(image.indirect_resources[1u + (cubes ? index : index * 2u)],
+			                                   element);
+		                       });
+	}
 	const auto* source = image.source < state.program.descriptor_sources.size()
 	                         ? &state.program.descriptor_sources[image.source]
 	                         : nullptr;
@@ -818,6 +855,22 @@ struct ImageSampler {
 std::array<ImageSampler, 2> LoadImageSamplers(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto& state = ctx.state;
 	const auto& mem = ctx.Memory(inst);
+	if (const auto& image = state.program.info.images.at(mem.resource); image.global) {
+		// GPU-SRT: the S# words select a float sampler and its integer variant after it.
+		const auto* handle = inst.Arg(1).ResolveInstruction();
+		if (handle == nullptr || handle->GetOpcode() != IR::ValueOpcode::GetSamplerResource ||
+		    handle->NumArgs() < 4u || state.global_sampler_variable == 0u) {
+			ctx.Fail(inst, "has an invalid global sampler");
+		}
+		const auto index = ctx.Def(inst.Arg(1));
+		std::array<ImageSampler, 2> result {};
+		for (uint32_t integer = 0; integer < 2u; ++integer) {
+			const auto element = integer == 0u ? index
+			    : Binary(state, spv::OpIAdd, TypeU32(state), index, ConstantU32(state, 1u));
+			result[integer] = {LoadGlobalSampler(state, element), true};
+		}
+		return result;
+	}
 	const auto& samplers = state.program.info.samplers;
 	const auto& root = samplers.at(mem.sampler);
 	std::array<ImageSampler, 2> result {};
@@ -856,6 +909,52 @@ std::array<ImageSampler, 2> LoadImageSamplers(ValueEmitContext& ctx, const IR::I
 }
 
 } // namespace
+
+void EmitGetImageResource(ValueEmitContext& ctx, const IR::Inst& inst) {
+	auto&      state    = ctx.state;
+	const auto resource = inst.Flags<uint32_t>();
+	if (resource >= state.program.info.images.size() || !state.program.info.images[resource].global) {
+		return;
+	}
+	const auto& image = state.program.info.images[resource];
+	// The host resolved the walked T# unless the walk met GPU-written words.
+	const auto flag = EmitLoadFlattenedSrtWord(state, image.indirect_mapping_offset);
+	const auto host = EmitLoadFlattenedSrtWord(state, image.indirect_mapping_offset + 1u);
+	ctx.Define(inst, EmitValueOrDefaultIfCondition(
+	    state, Binary(state, spv::OpINotEqual, TypeBool(state), flag, ConstantU32(state, 0u)),
+	    TypeU32(state), host, [&] {
+	std::array<uint32_t, IR::GlobalMapKeyWords> key {};
+	for (uint32_t word = 0; word < 8u; ++word) {
+		// T# words are SGPRs: a subgroup-uniform key lets the device search once per subgroup.
+		key[word] = image.r128 && word >= 4u ? ConstantU32(state, 0u)
+		                                     : EmitBroadcastFirstU32(state, ctx.Arg(inst, word));
+	}
+	key[8] = ConstantU32(state, IR::GlobalImageProfile(image));
+	return EmitGlobalMapLookup(state, key);
+	    }));
+}
+
+void EmitGetSamplerResource(ValueEmitContext& ctx, const IR::Inst& inst) {
+	auto&      state   = ctx.state;
+	const auto sampler = inst.Flags<uint32_t>();
+	if (sampler >= state.program.info.samplers.size() || !state.program.info.samplers[sampler].global) {
+		return;
+	}
+	const auto& sampler_resource = state.program.info.samplers[sampler];
+	const auto flag = EmitLoadFlattenedSrtWord(state, sampler_resource.indirect_mapping_offset);
+	const auto host = EmitLoadFlattenedSrtWord(state, sampler_resource.indirect_mapping_offset + 1u);
+	ctx.Define(inst, EmitValueOrDefaultIfCondition(
+	    state, Binary(state, spv::OpINotEqual, TypeBool(state), flag, ConstantU32(state, 0u)),
+	    TypeU32(state), host, [&] {
+	std::array<uint32_t, IR::GlobalMapKeyWords> key {};
+	for (uint32_t word = 0; word < 8u; ++word) {
+		key[word] = word < 4u ? EmitBroadcastFirstU32(state, ctx.Arg(inst, word)) : ConstantU32(state, 0u);
+	}
+	key[8] = ConstantU32(state, IR::GlobalMapSamplerProfile |
+	                                (state.program.info.samplers[sampler].depth_compare ? 1u << 4u : 0u));
+	return EmitGlobalMapLookup(state, key);
+	    }));
+}
 
 void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto op         = inst.GetOpcode();

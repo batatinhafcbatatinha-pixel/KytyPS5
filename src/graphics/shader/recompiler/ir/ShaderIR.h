@@ -26,6 +26,53 @@ class CodeGenerator;
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
+// GPU-side SRT (env KYTY_GPU_SRT): buffer descriptors that a program loads from guest memory are
+// loaded by the shader at run time instead of being walked on the CPU before every draw.
+[[nodiscard]] bool GpuSrtEnabled();
+// Parts of it (KYTY_GPU_SRT is a bit mask of these; 15 = all).
+enum GpuSrtPart : uint32_t {
+	GpuSrtVectorBuffers = 1u,  // Buffer loads with a V# loaded from memory.
+	GpuSrtScalarBuffers = 2u,  // Scalar constant-buffer loads with such a V#.
+	GpuSrtVertexFetch   = 4u,  // Vertex shaders run their own fetch.
+	GpuSrtScalarReads   = 8u,  // Other scalar reads are not walked on the CPU.
+	GpuSrtImages        = 16u, // Sampled images and samplers with memory-loaded T#/S#.
+};
+[[nodiscard]] bool GpuSrtPartEnabled(uint32_t part);
+
+// Global descriptor map of GPU-SRT images and samplers: one device buffer of u32 words that
+// shaders search by descriptor words. A key is 8 descriptor words (an S# or an R128 T# leaves
+// the rest zero) and a profile word. A bucket's state word is 0 when empty, 1 once a shader
+// claimed it and reported its key in the miss ring, and entry + 2 once the host resolved it.
+// An image entry is arm << ImageHeapKindShift | heap element; a sampler entry is the index of
+// its float sampler in the global sampler array, whose next index holds its integer variant.
+inline constexpr uint32_t GlobalMapKeyWords         = 9u;
+inline constexpr uint32_t GlobalMapRingCapacity     = 2048u;
+inline constexpr uint32_t GlobalMapRingEntryWords   = 1u + GlobalMapKeyWords; // Bucket, key.
+inline constexpr uint32_t GlobalMapRingBase         = 16u; // Word 0 counts ring entries.
+inline constexpr uint32_t GlobalMapBucketBase       = 20496u;
+inline constexpr uint32_t GlobalMapBucketWords      = 16u; // State, key.
+inline constexpr uint32_t GlobalMapBucketCount      = 16384u;
+inline constexpr uint32_t GlobalMapProbes           = 8u;
+inline constexpr uint32_t GlobalMapWords = GlobalMapBucketBase + GlobalMapBucketCount * GlobalMapBucketWords;
+inline constexpr uint32_t GlobalMapImageProfile     = 1u << 8u;
+inline constexpr uint32_t GlobalMapSamplerProfile   = 2u << 8u;
+inline constexpr uint32_t GlobalSamplerCapacity     = 4096u;
+static_assert(GlobalMapRingBase + GlobalMapRingCapacity * GlobalMapRingEntryWords <= GlobalMapBucketBase);
+// Image arms of the map: entry kinds ImageHeapKind 3..8 (Float, Uint, Sint, each plain and cube).
+inline constexpr uint32_t GlobalImageFirstKind      = 3u;
+inline constexpr uint32_t GlobalImageArms           = 6u;
+// Device address of the map, set by the host before any program is compiled.
+void     SetGlobalMapAddress(uint64_t address);
+uint64_t GlobalMapAddress();
+// Set by the host when BDA pages reach guest memory through the host view, which tracks GPU
+// writes per page: shaders may then store through run-time V#s and FLAT/GLOBAL addresses.
+void SetHostBdaWrites(bool enabled);
+bool HostBdaWrites();
+// TEST (temporary): KYTY_NO_RT_STORES=1 keeps stores/atomics with memory-loaded V#s on bound buffers.
+bool NoRuntimeStores();
+// TEST (temporary): KYTY_FMT_VECTOR=0 keeps run-time V# formatted loads to X only.
+bool FormattedVectorRuntime();
+
 // Finite descriptor domains also bound the arithmetic used to prove their indices.
 constexpr uint32_t MaxIndirectDescriptorProbes = 65536u;
 
@@ -84,12 +131,38 @@ struct MemoryInfo {
 		       !typed && !formatted && data_bits == 32u;
 	}
 
+	// A run-time V# store or 32-bit integer atomic through the host view (HostBdaWrites).
+	[[nodiscard]] bool SupportsIndirectBufferWrite(ValueOpcode opcode) const {
+		if (typed || formatted || data_bits != 32u || !HostBdaWrites() || NoRuntimeStores()) return false;
+		switch (opcode) {
+			case ValueOpcode::StoreBufferU32:
+			case ValueOpcode::StoreBufferU32x2:
+			case ValueOpcode::StoreBufferU32x3:
+			case ValueOpcode::StoreBufferU32x4:
+			case ValueOpcode::BufferAtomicSwap32:
+			case ValueOpcode::BufferAtomicCmpSwap32:
+			case ValueOpcode::BufferAtomicIAdd32:
+			case ValueOpcode::BufferAtomicISub32:
+			case ValueOpcode::BufferAtomicSMin32:
+			case ValueOpcode::BufferAtomicUMin32:
+			case ValueOpcode::BufferAtomicSMax32:
+			case ValueOpcode::BufferAtomicUMax32:
+			case ValueOpcode::BufferAtomicAnd32:
+			case ValueOpcode::BufferAtomicOr32:
+			case ValueOpcode::BufferAtomicXor32: return true;
+			default: return false;
+		}
+	}
 	[[nodiscard]] bool SupportsIndirectBufferLoad(ValueOpcode opcode) const {
 		if (typed) return false;
 		if (data_bits == 8u) return !formatted && opcode == ValueOpcode::LoadBufferU8;
 		if (data_bits == 16u) return !formatted && opcode == ValueOpcode::LoadBufferU16;
+		const bool vector_load = opcode == ValueOpcode::LoadBufferU32 ||
+		                         opcode == ValueOpcode::LoadBufferU32x2 ||
+		                         opcode == ValueOpcode::LoadBufferU32x3 ||
+		                         opcode == ValueOpcode::LoadBufferU32x4;
 		return data_bits == 32u &&
-		       (formatted ? opcode == ValueOpcode::LoadBufferU32
+		       (formatted ? (opcode == ValueOpcode::LoadBufferU32 || (FormattedVectorRuntime() && vector_load))
 		                  : opcode == ValueOpcode::ReadConstBuffer ||
 		                        opcode == ValueOpcode::LoadBufferU32 ||
 		                        opcode == ValueOpcode::LoadBufferU32x2 ||
@@ -164,6 +237,7 @@ struct ImageResource {
 	bool                          cube              = false;
 	bool                          r128              = false;
 	bool                          heap              = false; // Resident image heap root or kind.
+	bool                          global            = false; // GPU-SRT: T# resolved by the shader.
 	uint32_t                      indirect_root     = NoIndirectImage;
 	uint32_t                      indirect_mapping_offset   = 0;
 	uint32_t                      indirect_search_iterations = 0;
@@ -171,6 +245,13 @@ struct ImageResource {
 
 	bool operator==(const ImageResource& other) const = default;
 };
+
+// Profile word of a global map image key: the root properties ImageHeapResource keeps.
+[[nodiscard]] constexpr uint32_t GlobalImageProfile(const ImageResource& image) {
+	return GlobalMapImageProfile | (static_cast<uint32_t>(image.dimension) & 0xfu) |
+	       (image.depth_compare ? 1u << 4u : 0u) | (image.unfiltered_access_only ? 1u << 5u : 0u) |
+	       (image.r128 ? 1u << 6u : 0u);
+}
 
 [[nodiscard]] constexpr Prospero::BufferFormat
 RawSignedStorageFormat(const ImageResource& image, Prospero::BufferFormat format) {
@@ -204,6 +285,7 @@ struct SamplerResource {
 	bool     depth_compare         = false;
 	bool     integer_border        = false;
 	bool     gather_lod            = false;
+	bool     global                = false; // GPU-SRT: S# resolved by the shader.
 
 	bool operator==(const SamplerResource& other) const = default;
 };
@@ -529,6 +611,7 @@ struct ShaderInfo {
 	std::vector<SamplerResource>     samplers;
 	std::vector<SampledResourcePair> sampled_pairs;
 	std::vector<std::array<uint32_t, 2>> address_bases; // Flattened SRT slots of global bases.
+	std::vector<std::array<uint32_t, 2>> user_data_bases; // User-data registers of global bases.
 	std::vector<StageInput>          inputs;
 	std::vector<StageOutput>         outputs;
 	std::vector<uint32_t>            user_data_registers;

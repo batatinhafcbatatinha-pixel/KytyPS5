@@ -1,4 +1,6 @@
+#include "graphics/host_gpu/renderer/gpuTimer.h" // PROBE
 #include "graphics/host_gpu/renderer/renderDraw.h"
+#include "common/fpsProbe.h" // FPSPROBE
 
 #include "common/assert.h"
 #include "common/common.h"
@@ -832,6 +834,7 @@ static bool ResolvePrimitiveRestart(const CommandBuffer& buffer,
 
 bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCallInfo& draw,
                                             DrawRenderState& state) {
+	FpsProbe::Scope fps_scope(FpsProbe::DrawPrepare); // FPSPROBE
 	m_context.GetImageHeap().BeginDraw();
 	m_context.GetPipelineCache().GetGraphicsPrograms(buffer, state);
 	// Vertex programs beyond the host mesh limits or with unsupported call targets are not
@@ -1047,6 +1050,9 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
                                          const DrawIndexBufferSource& index_source) {
 	auto&      ucfg                     = buffer.GetUserConfig();
 	const bool primitive_restart_enable = state.primitive_restart_enable;
+	GpuTimer::Scope gpu_timer(buffer, m_context.GetCommandScheduler(), // PROBE
+	                          state.vertex_info[0].stage ? state.vertex_info[0].stage.module->info.shader_hash : 0,
+	                          state.ps_input_info.stage ? state.ps_input_info.stage.module->info.shader_hash : 0);
 	if (CopyDepthToColor(buffer, draw, emit, state)) {
 		return;
 	}
@@ -1271,6 +1277,7 @@ static std::optional<DrawEmitInfo> ResolveDrawEmit(const HW::UserConfig&        
 }
 
 bool RenderExecutor::DrawIndex(CommandBuffer& buffer, const DrawIndexArgs& args) {
+	FpsProbe::Scope fps_scope(FpsProbe::Draw); // FPSPROBE
 	KYTY_PROFILER_FUNCTION();
 
 	EXIT_IF(args.offset_source == DrawOffsetSource::DrawState && args.first_instance != 0);
@@ -1362,6 +1369,7 @@ bool RenderExecutor::DrawIndex(CommandBuffer& buffer, const DrawIndexArgs& args)
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool RenderExecutor::DrawAuto(CommandBuffer& buffer, const DrawAutoArgs& args) {
+	FpsProbe::Scope fps_scope(FpsProbe::Draw); // FPSPROBE
 	KYTY_PROFILER_FUNCTION();
 
 	EXIT_IF(args.offset_source == DrawOffsetSource::DrawState && args.first_instance != 0);

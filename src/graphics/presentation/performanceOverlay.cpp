@@ -1,4 +1,5 @@
 #include "graphics/presentation/performanceOverlay.h"
+#include "common/fpsProbe.h" // FPSPROBE
 
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
@@ -501,6 +502,21 @@ void Refresh(Snapshot& shown, const GraphicContext& graphics, Clock::time_point 
 	}
 	if (g_details.load(std::memory_order_acquire)) {
 		shown.guest_memory = LibKernel::Memory::GetDebugStats();
+	}
+	// FPSPROBE: per-second counter log (env KYTY_PERF_LOG).
+	static const bool perf_log = std::getenv("KYTY_PERF_LOG") != nullptr;
+	if (perf_log && seconds > 0.0) {
+		const auto r = [&](Counter counter) { return shown.rates[static_cast<size_t>(counter)]; };
+		std::printf("[perf] fps=%.1f frame=%.1fms gputhread=%.0fms/s waits=%.0f/s waitms=%.0fms/s "
+		            "submits=%.0f/s draws=%.0f/s disp=%.0f/s faults=%.0f/s texup=%.0fMB/s "
+		            "texdown=%.0fMB/s bufup=%.0fMB/s bufdown=%.0fMB/s present=%.0fms/s%s\n",
+		            shown.fps, shown.frame_ms, r(Counter::GpuThreadBusyNs) / 1e6, r(Counter::GpuWaits),
+		            r(Counter::GpuWaitNs) / 1e6, r(Counter::QueueSubmits), r(Counter::Draws),
+		            r(Counter::Dispatches), r(Counter::GpuFaults), r(Counter::TextureUploadBytes) / 1e6,
+		            r(Counter::TextureDownloadBytes) / 1e6, r(Counter::BufferUploadBytes) / 1e6,
+		            r(Counter::BufferDownloadBytes) / 1e6, r(Counter::PresentNs) / 1e6,
+		            FpsProbe::Report(seconds).c_str());
+		std::fflush(stdout);
 	}
 }
 

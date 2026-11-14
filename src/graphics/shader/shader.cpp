@@ -15,9 +15,11 @@
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/shaderCompiler.h"
 #include "graphics/shader/shaderVertexMetadata.h"
+#include "kernel/memory.h"
 #include "libs/errno.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstdio>
 #include <cstring>
@@ -319,6 +321,34 @@ static bool ShaderGetStaticVertexInputInfo(uint64_t shader_addr, const HW::UserS
 			LOGF("ShaderGetVertexInputInfo(): null vertex table pointer shader=0x%016" PRIx64 "\n",
 			     shader_addr);
 			return false;
+		}
+		if (ShaderRecompiler::IR::GpuSrtPartEnabled(ShaderRecompiler::IR::GpuSrtVertexFetch)) {
+			// The shader loads the vertex buffer descriptors itself (GPU-side SRT).
+			return true;
+		}
+		// Read the tables through the GPU-written memory path: a GPU pass can have written them
+		// earlier in the frame, and the reader decides whether the guest copy is current.
+		std::array<uint32_t, 256> attrib_copy {};
+		std::array<uint32_t, ShaderVertexInputInfo::RES_MAX * 4> buffer_copy {};
+		uint32_t attrib_count = 0;
+		for (const auto& in: metadata.input_semantics) {
+			attrib_count = std::max<uint32_t>(attrib_count, in.semantic + 1u);
+		}
+		if (attrib_count != 0 &&
+		    LibKernel::Memory::ReadGpuTable(reinterpret_cast<uint64_t>(attrib), attrib_copy.data(),
+		                                    attrib_count * sizeof(uint32_t))) {
+			uint32_t buffer_count = 0;
+			for (const auto& in: metadata.input_semantics) {
+				buffer_count =
+				    std::max<uint32_t>(buffer_count, (attrib_copy[in.semantic] & 0x1fu) + 1u);
+			}
+			buffer_count = std::min<uint32_t>(buffer_count, ShaderVertexInputInfo::RES_MAX);
+			if (LibKernel::Memory::ReadGpuTable(reinterpret_cast<uint64_t>(buffer),
+			                                    buffer_copy.data(),
+			                                    buffer_count * 4u * sizeof(uint32_t))) {
+				attrib = attrib_copy.data();
+				buffer = buffer_copy.data();
+			}
 		}
 		ShaderApplyAttribSemantics(info, metadata.input_semantics, attrib, buffer);
 		ShaderDetectBuffers(info);
