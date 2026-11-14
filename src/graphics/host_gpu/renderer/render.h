@@ -16,6 +16,8 @@
 
 namespace Libs::Graphics {
 
+struct ShaderTextureResource;
+
 namespace HW {
 class Context;
 class UserConfig;
@@ -158,6 +160,11 @@ public:
 	                    std::span<PreparedBindings* const> bindings);
 	[[nodiscard]] TextureBinding ResolveTexture(const ShaderRecompiler::IR::ImageResource&   resource,
 	                                            const ShaderRecompiler::IR::DescriptorValue& value);
+	[[nodiscard]] TextureBinding FinishTexture(const ShaderRecompiler::IR::ImageResource& resource,
+	                                           const ShaderTextureResource& descriptor,
+	                                           TextureCache::ImageDesc desc, bool shader_conversion,
+	                                           vk::Format pixel_format, vk::Format view_format,
+	                                           Prospero::BufferFormat format);
 
 private:
 	// False, with nothing drawn, when the draw's indirect records need CPU counts.

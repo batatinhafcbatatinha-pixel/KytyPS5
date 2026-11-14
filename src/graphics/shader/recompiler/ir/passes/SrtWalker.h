@@ -85,6 +85,13 @@ bool WalkedImageActive(const ResourcePlan& plan, uint32_t image);
 // Length of the guest load at rip if it belongs to the walker running on this thread, else 0.
 // The exception handler completes such a load as a zero read.
 uint32_t SrtWalkerLoadLength(uint64_t rip);
+// Walker guest loads first ask this function: bit 32 set means the low 32 bits are the current word,
+// read without touching the guest mapping (no page fault on protected pages); 0 means do the guest
+// load as before (it may fault and wait for a read-back).
+using WalkerFastLoad = uint64_t (*)(uint64_t address);
+void SetWalkerFastLoad(WalkerFastLoad function);
+// A walker load faulted on this address's page: later walker loads there use the fast load.
+void SrtWalkerNoteProtectedPage(uint64_t address);
 // Hybrid GPU-SRT: while set on this thread, a walker load of a page the GPU wrote and the host
 // has not downloaded completes as zero instead of waiting, and taints the walk.
 void SetWalkerSkipsGpuWritten(bool skip);

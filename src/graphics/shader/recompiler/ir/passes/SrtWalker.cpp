@@ -7,6 +7,8 @@
 #include <xbyak/xbyak.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <bit>
 #include <cstring>
 #include <deque>
@@ -168,10 +170,80 @@ const uint8_t* Scratch(const ResourcePlan& plan) {
 
 thread_local const Xbyak::CodeGenerator* t_running_walker = nullptr;
 
-// Every guest load is mov eax, [r10] (41 8b 02), so a fault completes it as a zero read.
+std::atomic<WalkerFastLoad> g_walker_fast_load {nullptr};
+
+uint64_t WalkerFastLoadEntry(uint64_t address) {
+	const auto function = g_walker_fast_load.load(std::memory_order_relaxed);
+	return function != nullptr ? function(address) : 0;
+}
+
+// Pages walker loads faulted on recently (4 KiB page numbers; hints only, races are harmless).
+constexpr uint32_t                 HotPageCount = 8;
+std::array<std::atomic<uint64_t>, HotPageCount> g_hot_pages {};
+std::atomic<uint32_t>              g_hot_next {0};
+
+// A guest load. Plain mov eax, [r10] (41 8b 02) unless its page faulted recently: those pages
+// are write-protected because the GPU wrote some of their bytes, and a fault costs microseconds,
+// so their loads first ask the fast load (a call that keeps every register the walker uses and
+// the flags). When it cannot answer, the same mov runs and a fault completes it as before (a zero
+// read for unmapped memory, a read-back wait for GPU-written words).
 void LoadGuest(Xbyak::CodeGenerator& code, const Xbyak::RegExp& address) {
+	Xbyak::Label hot;
+	Xbyak::Label slow;
+	Xbyak::Label done;
 	code.lea(code.r10, code.ptr[address]);
+	// rax is free: the load overwrites it.
+	code.pushfq();
+	code.push(code.rcx);
+	code.mov(code.rcx, code.r10);
+	code.shr(code.rcx, 12);
+	code.mov(code.rax, reinterpret_cast<uint64_t>(g_hot_pages.data()));
+	for (uint32_t i = 0; i < HotPageCount; i++) {
+		code.cmp(code.rcx, code.qword[code.rax + i * 8]);
+		code.je(hot, Xbyak::CodeGenerator::T_NEAR);
+	}
+	code.pop(code.rcx);
+	code.popfq();
 	code.mov(code.eax, code.dword[code.r10]);
+	code.jmp(done, Xbyak::CodeGenerator::T_NEAR);
+
+	code.L(hot);
+	code.pop(code.rcx);
+	code.popfq();
+	code.pushfq();
+	for (const auto& reg: {code.rcx, code.rdx, code.r8, code.r9, code.r10, code.r11}) {
+		code.push(reg);
+	}
+	code.sub(code.rsp, 32);
+	code.movdqu(code.ptr[code.rsp], code.xmm0);
+	code.movdqu(code.ptr[code.rsp + 16], code.xmm1);
+	code.mov(code.r11, code.rsp);
+	code.and_(code.rsp, -16);
+	code.sub(code.rsp, 48);
+	code.mov(code.ptr[code.rsp + 32], code.r11);
+	code.mov(code.rcx, code.r10);
+	code.mov(code.rax, reinterpret_cast<uint64_t>(&WalkerFastLoadEntry));
+	code.call(code.rax);
+	code.mov(code.rsp, code.ptr[code.rsp + 32]);
+	code.movdqu(code.xmm0, code.ptr[code.rsp]);
+	code.movdqu(code.xmm1, code.ptr[code.rsp + 16]);
+	code.add(code.rsp, 32);
+	for (const auto& reg: {code.r11, code.r10, code.r9, code.r8, code.rdx, code.rcx}) {
+		code.pop(reg);
+	}
+	code.popfq();
+	// Branch on bit 32 of rax without changing the flags.
+	code.push(code.rcx);
+	code.rorx(code.rcx, code.rax, 32);
+	code.mov(code.ecx, code.ecx);
+	code.jrcxz(slow);
+	code.pop(code.rcx);
+	code.mov(code.eax, code.eax);
+	code.jmp(done, Xbyak::CodeGenerator::T_NEAR);
+	code.L(slow);
+	code.pop(code.rcx);
+	code.mov(code.eax, code.dword[code.r10]);
+	code.L(done);
 }
 
 class RuntimeValidator {
@@ -1449,6 +1521,19 @@ void MarkWalkerTainted() {
 
 bool TakeWalkerTaint() {
 	return std::exchange(t_walker_tainted, false);
+}
+
+void SrtWalkerNoteProtectedPage(uint64_t address) {
+	const auto page = address >> 12u;
+	for (const auto& hot: g_hot_pages) {
+		if (hot.load(std::memory_order_relaxed) == page) return;
+	}
+	g_hot_pages[g_hot_next.fetch_add(1, std::memory_order_relaxed) % HotPageCount].store(
+	    page, std::memory_order_relaxed);
+}
+
+void SetWalkerFastLoad(WalkerFastLoad function) {
+	g_walker_fast_load.store(function, std::memory_order_relaxed);
 }
 
 uint32_t SrtWalkerLoadLength(uint64_t rip) {

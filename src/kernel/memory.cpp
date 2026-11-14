@@ -1,4 +1,5 @@
 #include "kernel/memory.h"
+#include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -867,9 +868,20 @@ void InvalidateMemory(uint64_t vaddr, uint64_t size) {
 	(void)GetGpuResources().InvalidateMemory(vaddr, size);
 }
 
+// SRT-walker loads: the current guest word when no GPU write or pending download covers it (the
+// same check a walker fault makes), without faulting on a protected page.
+static uint64_t WalkerFastLoad(uint64_t vaddr) {
+	uint32_t value = 0;
+	if ((vaddr & 3u) != 0 || !TryCurrentWalkerLoad(vaddr, &value)) {
+		return 0;
+	}
+	return (uint64_t {1} << 32u) | value;
+}
+
 void InstallGpuResources(Graphics::RenderContext* resources) noexcept {
 	EXIT_IF(resources != nullptr && g_gpu_resources != nullptr);
 	g_gpu_resources = resources;
+	Graphics::ShaderRecompiler::IR::SetWalkerFastLoad(resources != nullptr ? &WalkerFastLoad : nullptr);
 }
 
 bool ReadGpuTable(uint64_t vaddr, void* data, uint64_t size) {
