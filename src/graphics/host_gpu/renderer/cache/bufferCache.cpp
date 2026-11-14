@@ -235,7 +235,11 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		}
 	};
 	if constexpr (async) {
-		m_scheduler.DeferPriorityOperation(std::move(publish));
+		if (m_capture_publish != nullptr) {
+			*m_capture_publish = std::move(publish);
+		} else {
+			m_scheduler.DeferPriorityOperation(std::move(publish));
+		}
 	} else {
 		const auto tick = m_scheduler.CurrentTick();
 		m_scheduler.Wait(tick);
@@ -344,6 +348,9 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 			}
 		}
 		if (gpu_bytes) {
+			NoteProducerWait(vaddr, size,
+			                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wait_begin)
+			                     .count());
 			ShaderRecompiler::IR::NoteDescriptorWait(
 			    ShaderRecompiler::IR::WalkedProgram(),
 			    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wait_begin)
@@ -454,6 +461,8 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 		const auto old_id = (it++)->second;
 		JoinOverlap(id, old_id, !overlap.has_stream_leap);
 	}
+	// Its contents come from copies recorded now: a GPU write of this batch.
+	m_slot_buffers[id].last_write_tick = m_scheduler.CurrentTick();
 	Register(id);
 	return id;
 }
@@ -480,6 +489,10 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 
 void BufferCache::UploadCopies(std::span<const BufferUpload> uploads,
                                std::span<vk::BufferCopy> copies, uint64_t total_size) {
+	// An upload is a GPU write of its batch (early compute must not read ahead of it).
+	for (const auto& upload: uploads) {
+		upload.buffer->last_write_tick = m_scheduler.CurrentTick();
+	}
 	if (m_host_view && !copies.empty()) {
 		// Uploaded pages are current in their buffer: the page table sends BDA reads there again.
 		std::lock_guard lock(m_bda_sync_mutex);
@@ -565,6 +578,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	}
 	auto& buffer = m_slot_buffers[id];
 	TouchBuffer(buffer);
+	(is_written ? buffer.last_write_tick : buffer.last_read_tick) = m_scheduler.CurrentTick();
 	(void)SynchronizeBuffer(buffer, vaddr, size, is_written, is_texel_buffer);
 	if (is_written && HostViewEnabled()) {
 		// The written pages read the buffer from now on, so all of their bytes must be current.
@@ -585,6 +599,13 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		ForgetColorMetadataChecks(vaddr, size);
 		m_readback_pages.ForEachInRange(vaddr, size, [this](uint64_t begin, uint64_t end) {
 			m_eager_writes.Add(begin, end - begin);
+			auto it = m_readback_writers.lower_bound(begin);
+			if (it != m_readback_writers.begin() && std::prev(it)->second.first > begin) --it;
+			while (it != m_readback_writers.end() && it->first < end) {
+				if (it->first >= begin && it->second.first <= end) it = m_readback_writers.erase(it);
+				else ++it;
+			}
+			m_readback_writers[begin] = {end, m_current_program};
 		});
 	}
 	return {&buffer, buffer.Offset(vaddr)};
@@ -751,6 +772,9 @@ bool BufferCache::HasEagerDownloads(uint64_t vaddr, uint64_t size) const {
 }
 
 bool BufferCache::TryCurrentWalkerLoad(uint64_t vaddr, uint32_t& value) {
+	if (GuestGpu::IsGpuThread() && m_eager_pending.Intersects(vaddr, sizeof(value))) {
+		CompleteEagerDownloads(vaddr, sizeof(value), false, true);
+	}
 	// A walker word that no GPU write covers is current in guest memory even when its page is
 	// GPU-modified (a GPU write elsewhere in the page): complete the load without waiting.
 	return GuestGpu::IsGpuThread() && !m_gpu_modified_ranges.Intersects(vaddr, sizeof(value)) &&
@@ -759,6 +783,9 @@ bool BufferCache::TryCurrentWalkerLoad(uint64_t vaddr, uint32_t& value) {
 }
 
 bool BufferCache::ReadTable(uint64_t vaddr, uint64_t size, void* data) {
+	if (m_eager_pending.Intersects(vaddr, size)) {
+		CompleteEagerDownloads(vaddr, size, false, true);
+	}
 	// Bytes no GPU write covers hold their newest value in guest memory, even when a GPU write
 	// elsewhere in their page marks the page GPU-modified: read them without waiting.
 	if (!m_gpu_modified_ranges.Intersects(vaddr, size) && !m_eager_pending.Intersects(vaddr, size)) {
@@ -766,6 +793,109 @@ bool BufferCache::ReadTable(uint64_t vaddr, uint64_t size, void* data) {
 	}
 	ReadMemory(vaddr, size);
 	return LibKernel::Memory::TryReadBacking(vaddr, data, size);
+}
+
+StreamBuffer& BufferCache::GetSideSharedMemoryBuffer() {
+	if (!m_side_device_buffer) {
+		m_side_device_buffer = std::make_unique<StreamBuffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal,
+		                                                      m_device_buffer.Size());
+	}
+	return *m_side_device_buffer;
+}
+
+void BufferCache::SetCurrentProgram(uint64_t hash, bool reads_bda) noexcept {
+	m_current_program = hash;
+	if (reads_bda) m_bda_reader_tick = m_scheduler.CurrentTick();
+}
+
+void BufferCache::NoteProducerWait(uint64_t vaddr, uint64_t size, double ms) {
+	static constexpr auto     LearnWindow = std::chrono::seconds(2);
+	static constexpr uint32_t LearnWaits  = 20;
+	static constexpr double   LearnMs     = 20.0;
+	if (!m_scheduler.SideAvailable() || ms <= 0.05) return;
+	auto it = m_readback_writers.upper_bound(vaddr + size - 1);
+	if (it == m_readback_writers.begin() || std::prev(it)->second.first <= vaddr) return;
+	const auto program = std::prev(it)->second.second;
+	if (program == 0 || m_early_producers.contains(program)) return;
+	const auto now    = std::chrono::steady_clock::now();
+	auto&      window = m_producer_windows[program];
+	if (window.waits == 0 || now - window.start > LearnWindow) window = {now, 0, 0};
+	window.waits++;
+	window.ms += ms;
+	if (window.waits < LearnWaits || window.ms < LearnMs) return;
+	m_early_producers.insert(program);
+	m_producer_windows.erase(program);
+	std::printf("[early] compute program %016llx runs early (%u read-back waits, %.1f ms in %.1f s)\n",
+	            static_cast<unsigned long long>(program), window.waits, window.ms,
+	            std::chrono::duration<double>(now - window.start).count());
+	std::fflush(stdout);
+}
+
+int BufferCache::CheckEarly(std::span<const EarlyRange> ranges) {
+	m_scheduler.GetMasterSemaphore().Refresh();
+	const auto known = m_scheduler.GetMasterSemaphore().KnownGpuTick();
+	for (const auto& range: ranges) {
+		if (!GuestRange {range.vaddr, range.size}.Valid()) return 1;
+		// Memory a queued batch rendered or stored to as an image.
+		bool image_written = false;
+		{
+			std::scoped_lock lock {m_texture_cache.m_lock};
+			m_texture_cache.ForEachImageInRegion(range.vaddr, range.size, [&](ImageId, Image& image) {
+				image_written |= image.last_write_tick > known;
+			});
+		}
+		if (image_written) return 7;
+		const auto& buffer = m_slot_buffers[FindBuffer(range.vaddr, range.size)];
+		if (buffer.last_write_tick > known) return 2; // A queued batch writes it.
+		if (range.written) {
+			if (m_bda_reader_tick > known) return 6; // A queued batch reads memory through BDA.
+			if (buffer.last_read_tick > known) return 3; // A queued batch reads what it writes.
+			if (HostViewEnabled()) {
+				const auto first = Common::AlignDown(range.vaddr, CACHING_PAGESIZE);
+				const auto last  = Common::AlignUp(range.vaddr + range.size, CACHING_PAGESIZE);
+				std::lock_guard lock(m_bda_sync_mutex);
+				if (!m_gpu_owned.Contains(first, last - first)) return 4; // New BDA entries.
+			}
+		} else if (buffer.last_read_tick > known &&
+		           m_memory_tracker.IsRegionCpuModified(range.vaddr, range.size)) {
+			return 5; // Its upload would overwrite bytes a queued batch reads.
+		}
+	}
+	return 0;
+}
+
+void BufferCache::RecordSideDownloads(std::span<const EarlyRange> ranges, uint64_t side_value) {
+	EXIT_IF(!m_scheduler.InSide());
+	for (const auto& range: ranges) {
+		if (!range.written) continue;
+		RangeSet pages;
+		m_readback_pages.ForEachInRange(range.vaddr, range.size, [&](uint64_t begin, uint64_t end) {
+			pages.Add(begin, end - begin);
+		});
+		pages.ForEach([&](uint64_t begin, uint64_t end) {
+			for (auto address = begin; address < end;) {
+				const auto* owner = m_page_table.Find(address >> PageTable::kPageBits);
+				if (owner == nullptr || !*owner) {
+					address = std::min(end, Common::AlignDown(address, CACHING_PAGESIZE) + CACHING_PAGESIZE);
+					continue;
+				}
+				auto&      buffer = m_slot_buffers[*owner];
+				const auto last   = std::min(end, buffer.CpuAddress() + buffer.Size());
+				Common::UniqueFunction<void> publish;
+				m_capture_publish = &publish;
+				const bool recorded = DownloadBufferMemory<true>(buffer, address, last - address);
+				m_capture_publish = nullptr;
+				if (recorded) {
+					m_eager_downloads.push_back(
+					    {address, last, m_scheduler.CurrentTick(), side_value,
+					     std::make_shared<Common::UniqueFunction<void>>(std::move(publish))});
+					m_eager_pending.Add(address, last - address);
+				}
+				m_eager_writes.Subtract(address, last - address);
+				address = last;
+			}
+		});
+	}
 }
 
 void BufferCache::RecordEagerDownloads() {
@@ -799,7 +929,8 @@ void BufferCache::RecordEagerDownloads() {
 	m_recording_eager = false;
 }
 
-void BufferCache::CompleteEagerDownloads(uint64_t vaddr, uint64_t size, bool finished_only) {
+void BufferCache::CompleteEagerDownloads(uint64_t vaddr, uint64_t size, bool finished_only,
+                                         bool side_only) {
 	if (m_eager_downloads.empty()) {
 		return;
 	}
@@ -810,8 +941,22 @@ void BufferCache::CompleteEagerDownloads(uint64_t vaddr, uint64_t size, bool fin
 	m_scheduler.GetMasterSemaphore().Refresh();
 	RangeSet released;
 	std::erase_if(m_eager_downloads, [&](const EagerDownload& download) {
-		if (download.end <= vaddr || end <= download.begin ||
-		    (finished_only && !m_scheduler.IsFree(download.tick))) {
+		if (download.end <= vaddr || end <= download.begin) {
+			return false;
+		}
+		if (download.side != 0) {
+			if (finished_only && !m_scheduler.IsSideFree(download.side)) {
+				return false;
+			}
+			m_scheduler.WaitSide(download.side);
+			if (download.publish && *download.publish) {
+				(*download.publish)();
+			}
+			const auto first = Common::AlignDown(download.begin, TRACKER_PAGE_SIZE);
+			released.Add(first, Common::AlignUp(download.end, TRACKER_PAGE_SIZE) - first);
+			return true;
+		}
+		if (side_only || (finished_only && !m_scheduler.IsFree(download.tick))) {
 			return false;
 		}
 		// The download was recorded before its batch was submitted, so no flush is needed.

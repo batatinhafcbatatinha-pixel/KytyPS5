@@ -620,9 +620,17 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	     robustness2.robustImageAccess2 == VK_TRUE ? "true" : "false",
 	     graphics.robust_buffer_access_enabled ? "robustBufferAccess2" : "shader checks");
 
-	const float                     queue_priority = 1.0f;
+	// Two queues of the family when it has them: the second runs early compute.
+	uint32_t family_count = 0;
+	physical_device.getQueueFamilyProperties(&family_count, nullptr);
+	std::vector<vk::QueueFamilyProperties> families(family_count);
+	physical_device.getQueueFamilyProperties(&family_count, families.data());
+	const uint32_t queue_count =
+	    queue_family < family_count && families[queue_family].queueCount >= 2 ? 2u : 1u;
+	const float                     queue_priorities[2] = {1.0f, 1.0f};
 	const vk::DeviceQueueCreateInfo queue_create_info {
-	    .queueFamilyIndex = queue_family, .queueCount = 1, .pQueuePriorities = &queue_priority};
+	    .queueFamilyIndex = queue_family, .queueCount = queue_count, .pQueuePriorities = queue_priorities};
+	graphics.side_queue_count = queue_count;
 	const auto                 extension_count = static_cast<uint32_t>(device_extensions.size());
 	const vk::DeviceCreateInfo create_info {.queueCreateInfoCount    = 1,
 	                                        .pQueueCreateInfos       = &queue_create_info,
@@ -997,6 +1005,9 @@ void WindowContext::CreateVulkan() {
 	VULKAN_HPP_DEFAULT_DISPATCHER.init(graphic_ctx.device);
 	graphic_ctx.device.getQueue(graphic_ctx.queue_family, 0, &graphic_ctx.queue);
 	EXIT_IF(graphic_ctx.queue == nullptr);
+	if (graphic_ctx.side_queue_count >= 2) {
+		graphic_ctx.device.getQueue(graphic_ctx.queue_family, 1, &graphic_ctx.side_queue);
+	}
 	Dlss::Init(graphic_ctx, VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr,
 	           VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr);
 	Fsr::Init(graphic_ctx, VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr);

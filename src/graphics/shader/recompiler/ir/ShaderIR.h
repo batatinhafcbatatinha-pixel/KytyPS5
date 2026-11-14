@@ -29,9 +29,9 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 // GPU-side SRT (env KYTY_GPU_SRT): buffer descriptors that a program loads from guest memory are
 // loaded by the shader at run time instead of being walked on the CPU before every draw.
 [[nodiscard]] bool GpuSrtEnabled();
-// Parts of it. By default every program fetches its vertices on the GPU and learned programs
-// (see NoteDescriptorWait) add GpuSrtAutoParts; KYTY_GPU_SRT=0 turns all of it off, any other
-// value applies that mask of parts to every program (31 = all).
+// Parts of it. By default only learned programs (see NoteDescriptorWait) take GpuSrtAutoParts;
+// KYTY_GPU_SRT=0 turns it off, any other value applies that mask of parts to every program
+// (31 = all).
 enum GpuSrtPart : uint32_t {
 	GpuSrtVectorBuffers = 1u,  // Buffer loads with a V# loaded from memory.
 	GpuSrtScalarBuffers = 2u,  // Scalar constant-buffer loads with such a V#.
@@ -43,7 +43,8 @@ enum GpuSrtPart : uint32_t {
 // The program whose resources are being tracked on this thread.
 void SetGpuSrtProgram(uint64_t hash, bool runtime_variant);
 // Default parts (every program) and the parts the run-time variant of a learned program adds.
-inline constexpr uint32_t GpuSrtDefaultParts = 4u;
+// None by default: GPU vertex fetch measured 3.5 fps slower once early compute removed the waits.
+inline constexpr uint32_t GpuSrtDefaultParts = 0u;
 inline constexpr uint32_t GpuSrtAutoParts    = 1u | 2u | 8u | 16u;
 // Whether programs are learned (the default mode), and a tag of the mode for stored programs.
 [[nodiscard]] bool     GpuSrtLearning();

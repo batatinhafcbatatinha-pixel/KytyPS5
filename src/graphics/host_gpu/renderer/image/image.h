@@ -149,6 +149,7 @@ public:
 	std::vector<CachedImageView> views;
 	ImageUsage       usage;
 	ImageBinding     binding;
+	uint64_t         last_write_tick = 0; // Last batch that rendered to, stored to or cleared it.
 	bool             registered     = false;
 	uint64_t         track_addr     = 0;
 	uint64_t         track_addr_end = 0;

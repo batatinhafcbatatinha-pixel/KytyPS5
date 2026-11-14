@@ -709,12 +709,14 @@ void RenderExecutor::BindImage(ImageId id, bool storage) {
 	}
 	image.binding.is_bound = true;
 	image.binding.shader_write |= storage;
+	if (storage) image.last_write_tick = m_context.GetCommandScheduler().CurrentTick();
 	m_bound_images.push_back(id);
 }
 
 void RenderExecutor::BindRenderTarget(ImageId id) {
 	auto& image             = m_context.GetTextureCache().GetImage(id);
 	image.binding.is_target = true;
+	image.last_write_tick   = m_context.GetCommandScheduler().CurrentTick();
 	m_bound_images.push_back(id);
 }
 
@@ -731,6 +733,10 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	EXIT_IF(!runtime);
 	const auto& program  = runtime.module->info;
 	const auto& snapshot = *runtime.resources;
+	m_context.GetBufferCache().SetCurrentProgram(
+	    program.shader_hash,
+	    program.info.uses_dma ||
+	        program.bindings.descriptor_counts[static_cast<size_t>(BindingKind::BdaPagetable)] != 0);
 	prepared.runtime = &runtime;
 	prepared.gds = {nullptr, 0, VK_WHOLE_SIZE};
 	prepared.flattened_srt = {};

@@ -5,6 +5,7 @@
 #include "common/common.h"
 #include "common/lruCache.h"
 #include "common/slotVector.h"
+#include "common/uniqueFunction.h"
 #include "graphics/host_gpu/memoryTracker.h"
 #include "graphics/host_gpu/rangeSet.h"
 #include "graphics/host_gpu/renderer/cache/faultManager.h"
@@ -16,6 +17,9 @@
 #include <mutex>
 #include <span>
 #include <unordered_map>
+#include <memory>
+#include <chrono>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -73,6 +77,8 @@ public:
 		}
 		EXIT("BufferCache: invalid utility-buffer usage\n");
 	}
+	// LDS storage of early (side queue) dispatches, which run beside the main queue's.
+	[[nodiscard]] StreamBuffer& GetSideSharedMemoryBuffer();
 	[[nodiscard]] const Buffer* GetGdsBuffer() const noexcept { return &m_gds_buffer; }
 	[[nodiscard]] Buffer* GetBdaPageTableBuffer() noexcept { return &m_bda_pagetable_buffer; }
 	[[nodiscard]] Buffer* GetFaultBuffer() noexcept { return m_fault_manager.GetFaultBuffer(); }
@@ -119,6 +125,24 @@ public:
 	// LibKernel::Memory::ReadGpuTable).
 	[[nodiscard]] bool ReadTable(uint64_t vaddr, uint64_t size, void* data);
 
+	// Early compute (CommandScheduler::BeginSide): a compute program whose output the GPU thread
+	// keeps waiting for while the main queue drains earlier work is a learned early producer.
+	// Reads through BDA are not bound ranges: early compute writes nothing while one is queued.
+	void SetCurrentProgram(uint64_t hash, bool reads_bda) noexcept;
+	[[nodiscard]] bool IsEarlyProducer(uint64_t hash) const { return m_early_producers.contains(hash); }
+	struct EarlyRange {
+		uint64_t vaddr;
+		uint64_t size;
+		bool     written;
+	};
+	// 0 when a dispatch binding these ranges may run before the queued main work: no queued batch
+	// writes them, none reads what it writes or what it uploads, and its written pages need no new
+	// BDA entries. Else the reason.
+	[[nodiscard]] int CheckEarly(std::span<const EarlyRange> ranges);
+	// While recording the side buffer: downloads of its writes to read-back pages, published once
+	// the side value is reached instead of with the main batch.
+	void RecordSideDownloads(std::span<const EarlyRange> ranges, uint64_t side_value);
+
 private:
 	friend struct BufferCacheTestAccess;
 
@@ -162,13 +186,23 @@ private:
 	void               ForgetColorMetadataChecks(uint64_t vaddr, uint64_t size);
 	// Publishes the eager downloads overlapping the range, waiting for them unless only the
 	// finished ones are wanted, and makes their pages readable again.
-	void               CompleteEagerDownloads(uint64_t vaddr, uint64_t size, bool finished_only);
+	void               CompleteEagerDownloads(uint64_t vaddr, uint64_t size, bool finished_only,
+	                                          bool side_only = false);
+	// A GPU-thread wait for read-back bytes: learns their producer as an early producer.
+	void               NoteProducerWait(uint64_t vaddr, uint64_t size, double ms);
 	[[nodiscard]] bool HasEagerDownloads(uint64_t vaddr, uint64_t size) const;
 
 	struct EagerDownload {
 		uint64_t begin;
 		uint64_t end;
 		uint64_t tick;
+		uint64_t side = 0; // Recorded on the side queue: wait for this side value, then publish.
+		std::shared_ptr<Common::UniqueFunction<void>> publish;
+	};
+	struct ProducerWindow {
+		std::chrono::steady_clock::time_point start;
+		uint32_t                              waits = 0;
+		double                                ms    = 0;
 	};
 
 	GraphicContext&                                   m_graphics;
@@ -188,6 +222,13 @@ private:
 	std::vector<EagerDownload>                        m_eager_downloads;
 	RangeSet                                          m_eager_pending;
 	bool                                              m_recording_eager = false;
+	// Early compute: the program binding buffers now, the writers of read-back pages, learning.
+	uint64_t                                          m_current_program = 0;
+	uint64_t                                          m_bda_reader_tick = 0;
+	std::map<uint64_t, std::pair<uint64_t, uint64_t>> m_readback_writers; // begin -> {end, program}
+	std::unordered_map<uint64_t, ProducerWindow>      m_producer_windows;
+	std::unordered_set<uint64_t>                      m_early_producers;
+	Common::UniqueFunction<void>*                     m_capture_publish = nullptr;
 	// One per TileManager::ColorClearSlots key slot.
 	std::array<RangeSet, 8>                           m_checked_color_metadata;
 	MemoryTracker                                     m_memory_tracker;
@@ -223,6 +264,7 @@ private:
 	StreamBuffer                                      m_stream_buffer;
 	StreamBuffer                                      m_download_buffer;
 	StreamBuffer                                      m_device_buffer;
+	std::unique_ptr<StreamBuffer>                     m_side_device_buffer;
 	TextureCache&                                     m_texture_cache;
 	uint64_t                                          m_total_used_memory  = 0;
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;

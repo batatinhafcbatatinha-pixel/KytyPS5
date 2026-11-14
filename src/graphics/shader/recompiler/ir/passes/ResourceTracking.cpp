@@ -28,9 +28,8 @@
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
-// KYTY_GPU_SRT unset: vertex fetch on the GPU for every program, and run-time descriptors for the
-// programs whose CPU walk keeps waiting for words the GPU wrote, kept only when the frame rate
-// improves (see Learning). 0 turns all of it off. Any other value is a fixed mask of GpuSrtPart
+// KYTY_GPU_SRT unset: run-time descriptors for the programs whose CPU walk keeps waiting for words
+// the GPU wrote, kept only when the frame rate improves (see Learning). 0 turns all of it off. Any other value is a fixed mask of GpuSrtPart
 // for every program, without learning (development of the GPU-side SRT).
 struct GpuSrtConfig {
 	uint32_t mask     = 0;
