@@ -28,6 +28,7 @@
 #include "libs/errno.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -243,7 +244,8 @@ static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& inp
 	}
 	// LDS has no contents to preserve between dispatches. The existing shader hazard
 	// barriers also order other users of this GPU-only utility buffer.
-	auto& storage = cache.GetUtilityBuffer(MemoryUsage::DeviceLocal);
+	auto& storage = context.GetCommandScheduler().InSide() ? cache.GetSideSharedMemoryBuffer()
+	                                                       : cache.GetUtilityBuffer(MemoryUsage::DeviceLocal);
 	const auto limit = std::min<uint64_t>(storage.Size(),
 	    context.GetGraphics().GetPhysicalDeviceProperties().limits.maxStorageBufferRange);
 	uint64_t size = sizeof(uint32_t);
@@ -364,6 +366,39 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 	PreparedBindings* descriptor_stage = &bindings;
 	BackAddressBases(m_context, input_info.stage);
 	FindBuffers(std::span {&descriptor_stage, 1u});
+
+	// Early compute: a learned producer whose bound buffers no queued batch writes (or reads where
+	// it writes) runs on the second queue ahead of the queued work, so read-backs of its output wait
+	// for it alone. Only plain buffer programs: no images, GDS, BDA or global handles. Everything
+	// recorded from here on (uploads, bindings, the dispatch, its read-back copies) goes to the side.
+	std::vector<BufferCache::EarlyRange> early_ranges;
+	bool                                 early = false;
+	static const char* early_setting = std::getenv("KYTY_EARLY_COMPUTE"); // 0 turns it off.
+	if (auto& scheduler = m_context.GetCommandScheduler();
+	    !(early_setting != nullptr && early_setting[0] == '0') && scheduler.SideAvailable() &&
+	    m_context.GetBufferCache().IsEarlyProducer(program.shader_hash)) {
+		using Kind         = ShaderRecompiler::IR::DescriptorBindingKind;
+		const auto& counts = program.bindings.descriptor_counts;
+		// Device buffers shared by every dispatch (GDS, BDA tables) would be used by the queued work
+		// at the same time; LDS emulation has a buffer of its own on the side queue.
+		bool eligible = program.info.images.empty() && !program.info.uses_dma &&
+		                !program.info.uses_gds && !program.info.uses_image_heap;
+		for (const auto kind: {Kind::Gds, Kind::BdaPagetable, Kind::FaultBuffer}) {
+			eligible = eligible && counts[static_cast<size_t>(kind)] == 0;
+		}
+		for (uint32_t i = 0; eligible && i < program.info.buffers.size(); i++) {
+			const auto& metadata = program.info.buffers[i];
+			if (metadata.descriptor_index == UINT32_MAX) continue;
+			const auto& source = bindings.buffer_sources[metadata.descriptor_index];
+			if (source.address == 0 || source.size == 0) continue;
+			early_ranges.push_back({source.address, source.size, metadata.written});
+		}
+		if (eligible && m_context.GetBufferCache().CheckEarly(early_ranges) == 0) {
+			scheduler.BeginSide();
+			early = true;
+		}
+	}
+
 	if (program.info.uses_dma) {
 		m_context.PrepareBda();
 	}
@@ -470,6 +505,11 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 
 	// The removed host fence also ordered read-only dispatches before later writers.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	if (early) {
+		auto& scheduler = m_context.GetCommandScheduler();
+		m_context.GetBufferCache().RecordSideDownloads(early_ranges, scheduler.SideValue());
+		(void)scheduler.SubmitSide();
+	}
 	ResetBindings();
 }
 

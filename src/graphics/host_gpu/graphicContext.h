@@ -54,6 +54,11 @@ struct GraphicContext {
 	Common::Mutex                      queue_mutex;
 	uint32_t                           queue_family = static_cast<uint32_t>(-1);
 	vk::Queue                          queue        = nullptr;
+	// A second queue of the same family for early compute (see CommandScheduler::BeginSide);
+	// null when the family has one queue.
+	Common::Mutex                      side_queue_mutex;
+	vk::Queue                          side_queue = nullptr;
+	uint32_t                           side_queue_count = 1;
 
 	[[nodiscard]] const vk::PhysicalDeviceProperties& GetPhysicalDeviceProperties() const {
 		return physical_device_properties;

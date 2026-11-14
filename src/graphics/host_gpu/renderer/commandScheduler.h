@@ -51,6 +51,22 @@ public:
 	[[nodiscard]] RenderContext&   Context() const noexcept { return m_context; }
 	[[nodiscard]] GraphicContext&  Graphics() const noexcept { return m_graphics; }
 
+	// Early compute: one dispatch recorded into a command buffer of its own and submitted at once
+	// to the second queue, so it runs before the work already queued on the main queue. The next
+	// main submission waits for it, so everything recorded after it (and every resource retired
+	// with the current tick) stays ordered after it.
+	[[nodiscard]] bool     SideAvailable() const noexcept { return m_graphics.side_queue != nullptr; }
+	[[nodiscard]] bool     InSide() const noexcept { return m_in_side; }
+	// The side value the current side recording signals.
+	[[nodiscard]] uint64_t SideValue() const noexcept { return m_side.CurrentTick(); }
+	void                   BeginSide();
+	uint64_t               SubmitSide();
+	void                   WaitSide(uint64_t value) { m_side.Wait(value); }
+	[[nodiscard]] bool     IsSideFree(uint64_t value) {
+		m_side.Refresh();
+		return m_side.IsFree(value);
+	}
+
 private:
 	class CommandPool {
 	public:
@@ -86,9 +102,14 @@ private:
 	void RunOperation(Common::UniqueFunction<void>&& operation);
 
 	MasterSemaphore              m_master;
+	MasterSemaphore              m_side;
 	RenderContext&               m_context;
 	GraphicContext&              m_graphics;
 	CommandPool                  m_command_pool;
+	CommandPool                  m_side_pool;
+	vk::CommandBuffer            m_main_buffer = nullptr; // Saved while recording a side buffer.
+	bool                         m_in_side     = false;
+	uint64_t                     m_side_wait   = 0; // Side value the next main submission waits for.
 	CommandBuffer                m_command;
 	DynamicState                 m_dynamic_state;
 	std::queue<PendingOperation> m_pending_operations;

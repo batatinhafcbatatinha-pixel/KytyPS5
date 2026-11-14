@@ -524,6 +524,7 @@ void TextureCache::CopyImage(ImageId destination_id, ImageId source_id) {
 	RefreshCopySource(source_id);
 	auto& destination = m_slot_images[destination_id];
 	auto& source      = m_slot_images[source_id];
+	destination.last_write_tick = m_scheduler.CurrentTick();
 	TrackImage(destination_id);
 	if (source.backing.samples != destination.backing.samples) {
 		EXIT("TextureCache: cannot issue an unequal-sample image copy\n");
@@ -1567,6 +1568,7 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format format,
                               const vk::ImageSubresourceRange& range, const vk::ClearValue& clear) {
 	auto& image = m_slot_images[id];
+	image.last_write_tick = m_scheduler.CurrentTick();
 	const auto aspects = image.info.IsDepth() ? ImageViewOps::DepthAspectMask(image.backing.format)
 	                                          : vk::ImageAspectFlagBits::eColor;
 	EXIT_IF(range.baseMipLevel >= image.info.resources.levels);
@@ -1785,6 +1787,7 @@ bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uin
 	}
 	ForgetColorMetadataChecks(image.info.data.address, copy_size);
 	m_texture_cache.DownloadImage(image, buffer, buf_offset, copy_size, levels);
+	buffer.last_write_tick = m_scheduler.CurrentTick(); // A GPU write of this batch.
 	return true;
 }
 

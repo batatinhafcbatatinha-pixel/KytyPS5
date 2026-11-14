@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include <cstdlib>
 
 #include "common/assert.h"
 #include "common/debugCounters.h"
@@ -78,8 +79,8 @@ bool CommandScheduler::InDeferredOperation() noexcept {
 }
 
 CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graphics)
-    : m_master(graphics), m_context(context), m_graphics(graphics),
-      m_command_pool(graphics, m_master), m_command(*this),
+    : m_master(graphics), m_side(graphics), m_context(context), m_graphics(graphics),
+      m_command_pool(graphics, m_master), m_side_pool(graphics, m_master), m_command(*this),
       m_priority_thread([this](std::stop_token stop) { PriorityOperationsThread(stop); }) {}
 
 CommandScheduler::~CommandScheduler() {
@@ -162,6 +163,7 @@ void CommandScheduler::Finish() {
 
 void CommandScheduler::Wait(uint64_t tick) {
 	EXIT_IF(tick > CurrentTick());
+	EXIT_IF(m_in_side && tick == CurrentTick());
 	if (tick == CurrentTick()) {
 		CheckActive();
 		// A stream-buffer wrap can wait while a draw is being prepared through a reference to
@@ -306,7 +308,53 @@ CommandBuffer& CommandScheduler::BeginCommand() {
 	return m_command;
 }
 
+void CommandScheduler::BeginSide() {
+	EXIT_IF(m_in_side || !SideAvailable() || m_command.IsInvalid());
+	m_command.EndRendering();
+	m_main_buffer      = m_command.m_buffer;
+	m_command.m_buffer = m_side_pool.Commit();
+	m_command.Begin();
+	m_in_side = true;
+}
+
+uint64_t CommandScheduler::SubmitSide() {
+	EXIT_IF(!m_in_side);
+	m_command.End();
+	const auto buffer = m_command.m_buffer;
+	m_command.m_buffer = m_main_buffer;
+	m_main_buffer      = nullptr;
+	m_in_side          = false;
+
+	const uint64_t value = m_side.NextTick();
+	vk::TimelineSemaphoreSubmitInfo timeline_info {};
+	timeline_info.signalSemaphoreValueCount = 1;
+	timeline_info.pSignalSemaphoreValues    = &value;
+	const auto semaphore = m_side.Handle();
+	vk::SubmitInfo submit_info {};
+	submit_info.pNext                = &timeline_info;
+	submit_info.commandBufferCount   = 1;
+	submit_info.pCommandBuffers      = &buffer;
+	submit_info.signalSemaphoreCount = 1;
+	submit_info.pSignalSemaphores    = &semaphore;
+	vk::Result result;
+	{
+		Common::LockGuard lock(m_graphics.side_queue_mutex);
+		result = m_graphics.side_queue.submit(1, &submit_info, nullptr);
+	}
+	if (result != vk::Result::eSuccess) {
+		EXIT("vkQueueSubmit (side) failed: %s\n", vk::to_string(result).c_str());
+	}
+	Common::DebugCounters::Add(Common::DebugCounters::Counter::QueueSubmits);
+	m_side_wait = value;
+	return value;
+}
+
 uint64_t CommandScheduler::Submit(SubmitInfo submit) {
+	EXIT_IF(m_in_side);
+	if (m_side_wait != 0) {
+		submit.AddWait(m_side.Handle(), m_side_wait, vk::PipelineStageFlagBits::eAllCommands);
+		m_side_wait = 0;
+	}
 	EXIT_IF(m_command.IsInvalid());
 
 	// GPU-SRT: the global map's misses of this batch reach the host with it.
