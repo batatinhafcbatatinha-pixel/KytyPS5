@@ -75,6 +75,21 @@ private:
 
 static_assert(std::atomic_uint32_t::is_always_lock_free);
 
+// Guest command submissions processed so far: CPU writes to memory a submission reads land
+// before it is submitted, so a page uploaded during one submission stays current for it.
+inline std::atomic<uint64_t> g_tracker_epoch {1};
+inline std::atomic<bool>     g_sticky_pages {true};
+
+inline uint64_t TrackerEpoch() noexcept {
+	return g_tracker_epoch.load(std::memory_order_relaxed);
+}
+inline void AdvanceTrackerEpoch() noexcept {
+	g_tracker_epoch.fetch_add(1, std::memory_order_relaxed);
+}
+inline bool StickyPagesEnabled() noexcept {
+	return g_sticky_pages.load(std::memory_order_relaxed);
+}
+
 class RegionManager final {
 public:
 	RegionManager(PageManager& page_manager, uint64_t cpu_addr)
@@ -87,7 +102,23 @@ public:
 	template <DirtySource source>
 	[[nodiscard]] bool IsModified(uint64_t offset, uint64_t size) const {
 		const auto [start, end] = GetPageRange(offset, size);
-		return GetBits<source>().Any(start, end);
+		if (!GetBits<source>().Any(start, end)) {
+			return false;
+		}
+		if constexpr (source == DirtySource::Cpu) {
+			// Rewritten pages uploaded in this submission are current in their buffers.
+			if (m_has_hot && StickyPagesEnabled() && m_fresh_epoch == TrackerEpoch()) {
+				for (const auto [first, last]: RegionBits(m_cpu_dirty, start, end)) {
+					for (auto page = first; page < last; page++) {
+						if (!m_hot.Get(page) || !m_hot_fresh.Get(page)) {
+							return true;
+						}
+					}
+				}
+				return false;
+			}
+		}
+		return true;
 	}
 
 	template <DirtySource source, bool enable>
@@ -98,8 +129,46 @@ public:
 				EXIT("CPU dirty state conflicts with GPU dirty state\n");
 			}
 		}
+		if constexpr (source == DirtySource::Gpu && enable) {
+			// GPU-written pages leave the rewritten set: they are write-watched again.
+			if (m_has_hot) {
+				RegionBits watch(m_cpu_dirty, start, end);
+				for (const auto [first, last]: RegionBits(m_cpu_dirty, start, end)) {
+					for (auto page = first; page < last; page++) {
+						if (!m_hot.Get(page)) {
+							watch.Unset(page);
+						}
+					}
+				}
+				m_hot.UnsetRange(start, end);
+				for (const auto [first, last]: watch) {
+					m_cpu_dirty.UnsetRange(first, last);
+				}
+				UpdateProtection<true, false>(watch);
+			}
+		}
 		auto&      bits = GetBits<source>();
 		RegionBits changed = enable ? RegionBits(~bits, start, end) : RegionBits(bits, start, end);
+		if constexpr (source == DirtySource::Cpu && enable) {
+			// A page written again after its upload is rewritten by the guest every frame:
+			// keeping it unwatched and uploading it once per submission saves a fault and two
+			// protection changes per write.
+			if (StickyPagesEnabled()) {
+				for (const auto [first, last]: changed) {
+					for (auto page = first; page < last; page++) {
+						if (m_rewritten.Get(page)) {
+							if (!m_has_hot) {
+								m_has_hot   = true;
+								m_hot_since = TrackerEpoch();
+							}
+							m_hot.Set(page);
+						} else {
+							m_rewritten.Set(page);
+						}
+					}
+				}
+			}
+		}
 		if constexpr (enable) {
 			bits.SetRange(start, end);
 		} else {
@@ -118,6 +187,45 @@ public:
 		auto&      bits         = GetBits<source>();
 		if (!bits.Any(start, end)) {
 			return;
+		}
+		if constexpr (clear && source == DirtySource::Cpu) {
+			if (m_has_hot && StickyPagesEnabled()) {
+				const auto epoch = TrackerEpoch();
+				if (epoch - m_hot_since > HotPageLifetime) {
+					// Pages stop counting as rewritten after a while; they qualify again by faulting.
+					m_hot.Clear();
+					m_rewritten.Clear();
+					m_has_hot = false;
+				} else {
+					if (m_fresh_epoch != epoch) {
+						m_hot_fresh.Clear();
+						m_fresh_epoch = epoch;
+					}
+					RegionBits upload(bits, start, end);
+					RegionBits watch(bits, start, end);
+					for (const auto [first, last]: RegionBits(bits, start, end)) {
+						for (auto page = first; page < last; page++) {
+							if (!m_hot.Get(page)) {
+								continue;
+							}
+							watch.Unset(page);
+							if (m_hot_fresh.Get(page)) {
+								upload.Unset(page);
+							} else {
+								m_hot_fresh.Set(page);
+							}
+						}
+					}
+					for (const auto [first, last]: watch) {
+						bits.UnsetRange(first, last);
+					}
+					UpdateProtection<true, false>(watch);
+					for (const auto [first, last]: upload) {
+						func(m_cpu_addr + first * TRACKER_PAGE_SIZE, (last - first) * TRACKER_PAGE_SIZE);
+					}
+					return;
+				}
+			}
 		}
 		RegionBits mask(bits, start, end);
 		if constexpr (clear) {
@@ -167,10 +275,19 @@ private:
 		        static_cast<size_t>((offset + size + TRACKER_PAGE_SIZE - 1) / TRACKER_PAGE_SIZE)};
 	}
 
+	// Submissions a page stays in the rewritten set before it is write-watched again.
+	static constexpr uint64_t HotPageLifetime = 4096;
+
 	PageManager& m_page_manager;
 	uint64_t     m_cpu_addr = 0;
 	RegionBits   m_cpu_dirty;
 	RegionBits   m_gpu_dirty;
+	RegionBits   m_rewritten; // written again by the CPU after an upload
+	RegionBits   m_hot;       // kept CPU-dirty and unwatched
+	RegionBits   m_hot_fresh; // hot pages uploaded in submission m_fresh_epoch
+	uint64_t     m_fresh_epoch = 0;
+	uint64_t     m_hot_since   = 0;
+	bool         m_has_hot     = false;
 };
 
 } // namespace Libs::Graphics

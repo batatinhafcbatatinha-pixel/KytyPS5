@@ -8,6 +8,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -63,7 +64,10 @@ public:
 	[[nodiscard]] uint64_t SideValue() const noexcept { return m_side.CurrentTick(); }
 	void                   BeginSide();
 	uint64_t               SubmitSide();
-	void                   WaitSide(uint64_t value) { m_side.Wait(value); }
+	void                   WaitSide(uint64_t value) {
+		SubmitQueuedUpTo(UINT64_MAX); // Side batches can wait for queued main batches.
+		m_side.Wait(value);
+	}
 	[[nodiscard]] bool     IsSideFree(uint64_t value) {
 		m_side.Refresh();
 		return m_side.IsFree(value);
@@ -100,6 +104,16 @@ private:
 
 	void BeginNext();
 	void PriorityOperationsThread(std::stop_token stop);
+	// Queue submission of the GPU thread's batches runs on a worker, in tick order.
+	struct QueuedSubmit {
+		SubmitInfo        info;
+		vk::CommandBuffer buffer = nullptr;
+		uint64_t          tick   = 0;
+	};
+	void SubmitThread(std::stop_token stop);
+	void SubmitToQueue(const SubmitInfo& submit, vk::CommandBuffer buffer, uint64_t tick);
+	void DrainSubmits();
+	void SubmitQueuedUpTo(uint64_t tick);
 	void QueueOperation(Common::UniqueFunction<void>&& operation, bool priority);
 	void RunOperation(Common::UniqueFunction<void>&& operation);
 
@@ -121,6 +135,12 @@ private:
 	std::jthread                 m_priority_thread;
 	uint64_t                     m_priority_active_tick = 0; // 0 while none runs
 	OperationState               m_operation_state      = OperationState::Open;
+	std::deque<QueuedSubmit>     m_submits;
+	std::mutex                   m_submit_mutex;
+	std::condition_variable_any  m_submit_changed;
+	bool                         m_submit_busy = false;
+	bool                         m_async_submit = true; // KYTY_ASYNC_SUBMIT=0 submits on the calling thread
+	std::jthread                 m_submit_thread; // Last: stops before the members it uses.
 };
 
 } // namespace Libs::Graphics
