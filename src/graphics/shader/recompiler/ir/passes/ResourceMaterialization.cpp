@@ -1646,11 +1646,13 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	     std::ranges::any_of(program.descriptor_sources, uses_workgroup_count));
 	auto& reads = snapshot.specialization_reads;
 	reads = program.source_reads;
+	SetWalkedProgram(program.shader_hash);
 	const bool hybrid = runtime.image_heap != nullptr && HybridWalkAllowed(program);
 	SetWalkerSkipsGpuWritten(hybrid);
 	(void)TakeWalkerTaint();
 	const bool walked = WalkSrt(program, runtime, snapshot.flattened_srt, capture_reads ? &reads : nullptr);
 	SetWalkerSkipsGpuWritten(false);
+	SetWalkedProgram(0);
 	// A tainted walk read zeros for GPU-written words: global descriptors use the shader path.
 	const bool runtime_descriptors = !hybrid || TakeWalkerTaint();
 	const auto global_entry = [&](uint32_t source, uint32_t words, uint32_t profile) {

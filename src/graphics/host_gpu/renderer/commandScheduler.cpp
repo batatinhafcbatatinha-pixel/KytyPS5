@@ -1,5 +1,4 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
-#include "common/fpsProbe.h" // FPSPROBE
 
 #include "common/assert.h"
 #include "common/debugCounters.h"
@@ -308,7 +307,6 @@ CommandBuffer& CommandScheduler::BeginCommand() {
 }
 
 uint64_t CommandScheduler::Submit(SubmitInfo submit) {
-	FpsProbe::Scope fps_scope(FpsProbe::Submit); // FPSPROBE
 	EXIT_IF(m_command.IsInvalid());
 
 	// GPU-SRT: the global map's misses of this batch reach the host with it.

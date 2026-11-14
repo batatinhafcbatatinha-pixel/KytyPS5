@@ -3,7 +3,6 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/profiler.h"
-#include "common/fpsProbe.h" // PROBE
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/host_gpu/regionDefinitions.h"
@@ -641,7 +640,6 @@ void ImageHeap::Commit(CommandBuffer& buffer, vk::PipelineBindPoint bind_point,
 		});
 	}
 	if (!transitions.empty()) {
-		FpsProbe::CountEvent(FpsProbe::HeapTransits); // PROBE
 		buffer.EndRendering();
 		vk::DependencyInfo dependency {};
 		dependency.imageMemoryBarrierCount = static_cast<uint32_t>(transitions.size());
@@ -877,7 +875,6 @@ void ImageHeap::UploadGlobalBuckets(CommandBuffer& buffer) {
 		                   record});
 	}
 	m_global_dirty.clear();
-	FpsProbe::CountEvent(FpsProbe::BucketUploads); // PROBE
 	buffer.EndRendering();
 	const auto native = buffer.Handle();
 	vk::MemoryBarrier before {};

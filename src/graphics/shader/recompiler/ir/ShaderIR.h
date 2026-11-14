@@ -29,7 +29,9 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 // GPU-side SRT (env KYTY_GPU_SRT): buffer descriptors that a program loads from guest memory are
 // loaded by the shader at run time instead of being walked on the CPU before every draw.
 [[nodiscard]] bool GpuSrtEnabled();
-// Parts of it (KYTY_GPU_SRT is a bit mask of these; 15 = all).
+// Parts of it. By default every program fetches its vertices on the GPU and learned programs
+// (see NoteDescriptorWait) add GpuSrtAutoParts; KYTY_GPU_SRT=0 turns all of it off, any other
+// value applies that mask of parts to every program (31 = all).
 enum GpuSrtPart : uint32_t {
 	GpuSrtVectorBuffers = 1u,  // Buffer loads with a V# loaded from memory.
 	GpuSrtScalarBuffers = 2u,  // Scalar constant-buffer loads with such a V#.
@@ -38,6 +40,22 @@ enum GpuSrtPart : uint32_t {
 	GpuSrtImages        = 16u, // Sampled images and samplers with memory-loaded T#/S#.
 };
 [[nodiscard]] bool GpuSrtPartEnabled(uint32_t part);
+// The program whose resources are being tracked on this thread.
+void SetGpuSrtProgram(uint64_t hash, bool runtime_variant);
+// Default parts (every program) and the parts the run-time variant of a learned program adds.
+inline constexpr uint32_t GpuSrtDefaultParts = 4u;
+inline constexpr uint32_t GpuSrtAutoParts    = 1u | 2u | 8u | 16u;
+// Whether programs are learned (the default mode), and a tag of the mode for stored programs.
+[[nodiscard]] bool     GpuSrtLearning();
+[[nodiscard]] uint32_t GpuSrtStoreTag();
+[[nodiscard]] bool IsRuntimeProgram(uint64_t hash);
+// GPU thread: the descriptor walk of program waited ms for bytes the GPU wrote.
+void NoteDescriptorWait(uint64_t program, double ms);
+// GPU thread, once per draw or dispatch: advances a running trial of a learned program.
+void LearningTick();
+// The program whose SRT the CPU is walking on this thread (0 outside walks).
+void              SetWalkedProgram(uint64_t hash);
+[[nodiscard]] uint64_t WalkedProgram();
 
 // Global descriptor map of GPU-SRT images and samplers: one device buffer of u32 words that
 // shaders search by descriptor words. A key is 8 descriptor words (an S# or an R128 T# leaves
@@ -68,10 +86,6 @@ uint64_t GlobalMapAddress();
 // writes per page: shaders may then store through run-time V#s and FLAT/GLOBAL addresses.
 void SetHostBdaWrites(bool enabled);
 bool HostBdaWrites();
-// TEST (temporary): KYTY_NO_RT_STORES=1 keeps stores/atomics with memory-loaded V#s on bound buffers.
-bool NoRuntimeStores();
-// TEST (temporary): KYTY_FMT_VECTOR=0 keeps run-time V# formatted loads to X only.
-bool FormattedVectorRuntime();
 
 // Finite descriptor domains also bound the arithmetic used to prove their indices.
 constexpr uint32_t MaxIndirectDescriptorProbes = 65536u;
@@ -133,7 +147,7 @@ struct MemoryInfo {
 
 	// A run-time V# store or 32-bit integer atomic through the host view (HostBdaWrites).
 	[[nodiscard]] bool SupportsIndirectBufferWrite(ValueOpcode opcode) const {
-		if (typed || formatted || data_bits != 32u || !HostBdaWrites() || NoRuntimeStores()) return false;
+		if (typed || formatted || data_bits != 32u || !HostBdaWrites()) return false;
 		switch (opcode) {
 			case ValueOpcode::StoreBufferU32:
 			case ValueOpcode::StoreBufferU32x2:
@@ -162,7 +176,7 @@ struct MemoryInfo {
 		                         opcode == ValueOpcode::LoadBufferU32x3 ||
 		                         opcode == ValueOpcode::LoadBufferU32x4;
 		return data_bits == 32u &&
-		       (formatted ? (opcode == ValueOpcode::LoadBufferU32 || (FormattedVectorRuntime() && vector_load))
+		       (formatted ? (opcode == ValueOpcode::LoadBufferU32 || vector_load)
 		                  : opcode == ValueOpcode::ReadConstBuffer ||
 		                        opcode == ValueOpcode::LoadBufferU32 ||
 		                        opcode == ValueOpcode::LoadBufferU32x2 ||

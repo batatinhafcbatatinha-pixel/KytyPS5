@@ -232,6 +232,7 @@ private:
 		uint64_t              hash            = 0;
 		uint32_t              user_data_count = 0;
 		std::vector<uint32_t> static_state;
+		bool                  runtime_srt     = false; // A learned program's run-time descriptor variant.
 
 		bool operator==(const ProgramKey&) const = default;
 	};

@@ -1,5 +1,4 @@
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
-#include "common/fpsProbe.h" // FPSPROBE
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -732,7 +731,6 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	EXIT_IF(!runtime);
 	const auto& program  = runtime.module->info;
 	const auto& snapshot = *runtime.resources;
-	FpsProbe::g_producer = program.shader_hash; // PROBE
 	prepared.runtime = &runtime;
 	prepared.gds = {nullptr, 0, VK_WHOLE_SIZE};
 	prepared.flattened_srt = {};
@@ -938,11 +936,9 @@ void RenderExecutor::BackDrawAddressBases(const ShaderStageRuntime& stage) {
 
 void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
                                              std::span<RenderColorInfo> colors) {
-	FpsProbe::Scope fps_scope(FpsProbe::Bindings); // FPSPROBE
 	bool uses_dma        = false;
 	bool uses_image_heap = false;
 	{
-		FpsProbe::Scope zone(FpsProbe::FindBuf); // FPSPROBE
 		FindBuffers(stages);
 	}
 	for (auto* stage: stages) {
@@ -951,14 +947,12 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 		BackDrawAddressBases(*stage->runtime);
 	}
 	if (uses_dma) {
-		FpsProbe::Scope zone(FpsProbe::Bda); // FPSPROBE
 		m_context.PrepareBda();
 	}
 	if (uses_image_heap) {
 		m_context.GetImageHeap().Rebind(*this);
 	}
 	{
-		FpsProbe::Scope zone(FpsProbe::RebindImg); // FPSPROBE
 		for (auto* stage: stages) {
 			RebindImages(*stage);
 		}
@@ -977,7 +971,6 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 	}
 	// Discovery can read back PS5 metadata and submit the scheduler. Reserve draw buffers only
 	// after image identities are final; attachment layout transitions follow buffer alias copies.
-	FpsProbe::Scope zone(FpsProbe::RebindBuf); // FPSPROBE
 	for (auto* stage: stages) {
 		RebindBuffers(*stage);
 	}
@@ -987,7 +980,6 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
                                     vk::PipelineBindPoint              pipeline_bind_point,
                                     const PipelineCache::Pipeline&     pipeline,
                                     std::span<PreparedBindings* const> prepared_bindings) {
-	FpsProbe::Scope fps_scope(FpsProbe::Commit); // FPSPROBE
 	KYTY_PROFILER_FUNCTION();
 	auto                           vk_buffer              = buffer.Handle();
 	size_t                         image_descriptor_count = 0;

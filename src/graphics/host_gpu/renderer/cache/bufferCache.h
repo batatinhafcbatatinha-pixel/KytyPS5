@@ -14,7 +14,6 @@
 #include <array>
 #include <map>
 #include <mutex>
-#include <source_location>
 #include <span>
 #include <unordered_map>
 #include <utility>
@@ -58,8 +57,7 @@ public:
 	KYTY_CLASS_NO_COPY(BufferCache);
 
 	void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
-	void                   ReadMemory(uint64_t vaddr, uint64_t size, bool is_write = false,
-	                                  std::source_location caller = std::source_location::current());
+	void                   ReadMemory(uint64_t vaddr, uint64_t size, bool is_write = false);
 	[[nodiscard]] Buffer&  GetBuffer(BufferId id) { return m_slot_buffers[id]; }
 	[[nodiscard]] BufferId FindBuffer(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainBuffer(uint64_t vaddr, uint64_t size,
@@ -108,16 +106,15 @@ public:
 	// Host view (GPU-SRT): BDA reads and writes reach guest memory as the CPU sees it, through
 	// imported chunks of the guest backing, except on pages whose newest bytes a GPU write left
 	// in a cache buffer (GPU-owned), which the page table sends to that buffer.
-	void DescribePage(uint64_t vaddr) noexcept; // PROBE
 	[[nodiscard]] bool HostViewEnabled() const noexcept { return !m_host_chunks_failed && m_host_view; }
 	// Called before the GPU thread submits a batch. Downloads the batch's GPU writes to pages
 	// the CPU has read back before, so a later read waits only for this batch instead of
 	// flushing and draining the queue.
 	void               RecordEagerDownloads();
 	[[nodiscard]] bool HasEagerWrites() const { return !m_eager_writes.Empty(); }
-	// SRT-walker load of a GPU-written word on the GPU thread: the guest word, when its page held
-	// the same words every time the walker waited for it. Verified once the page is published.
-	[[nodiscard]] bool TrySpeculativeWalkerLoad(uint64_t vaddr, uint32_t& value);
+	// SRT-walker load on the GPU thread from a GPU-modified page: the guest word, when no GPU
+	// write covers it, so the walk needs no read-back.
+	[[nodiscard]] bool TryCurrentWalkerLoad(uint64_t vaddr, uint32_t& value);
 	// GPU thread: reads a small table of guest memory the GPU may have written (see
 	// LibKernel::Memory::ReadGpuTable).
 	[[nodiscard]] bool ReadTable(uint64_t vaddr, uint64_t size, void* data);
@@ -168,14 +165,6 @@ private:
 	void               CompleteEagerDownloads(uint64_t vaddr, uint64_t size, bool finished_only);
 	[[nodiscard]] bool HasEagerDownloads(uint64_t vaddr, uint64_t size) const;
 
-	// Learns page stability from a walker read-back and checks earlier speculative loads.
-	void               LearnWalkerWord(uint64_t vaddr, uint32_t before, uint32_t after);
-	void               VerifySpeculations();
-
-	struct Speculation {
-		uint64_t address;
-		uint32_t value;
-	};
 	struct EagerDownload {
 		uint64_t begin;
 		uint64_t end;
@@ -199,16 +188,6 @@ private:
 	std::vector<EagerDownload>                        m_eager_downloads;
 	RangeSet                                          m_eager_pending;
 	bool                                              m_recording_eager = false;
-	// Per guest word the GPU thread waited for: times it held the same value after the wait, and
-	// times a speculative read of it was wrong (it is never speculated again after a few).
-	struct WordStability {
-		uint16_t same   = 0;
-		uint16_t misses = 0;
-	};
-	std::unordered_map<uint64_t, WordStability>       m_word_stability;
-	[[nodiscard]] bool StableWord(uint64_t address) const;
-	void               LearnWord(uint64_t address, bool same);
-	std::unordered_map<uint64_t, uint32_t>            m_speculations; // Word address -> value.
 	// One per TileManager::ColorClearSlots key slot.
 	std::array<RangeSet, 8>                           m_checked_color_metadata;
 	MemoryTracker                                     m_memory_tracker;

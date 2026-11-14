@@ -593,7 +593,7 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	    Config::OcclusionQueriesEnabled() && supported12.hostQueryReset;
 	graphics.occlusion_query_precise_enabled =
 	    graphics.occlusion_queries_enabled && supported2.features.occlusionQueryPrecise;
-	features12.hostQueryReset             = supported12.hostQueryReset; // Also the GPU timer probe.
+	features12.hostQueryReset             = graphics.occlusion_queries_enabled;
 	device_features.occlusionQueryPrecise = graphics.occlusion_query_precise_enabled;
 	LOGF("Vulkan ray query: %s\n", ray_query_enabled ? "true" : "false");
 	LOGF("Vulkan occlusion queries: %s, precise: %s\n",
