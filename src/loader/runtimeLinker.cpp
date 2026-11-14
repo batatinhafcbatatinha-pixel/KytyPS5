@@ -677,6 +677,7 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 				return true;
 			}
 			uint32_t value = 0;
+			if (length != 0) Libs::Graphics::ShaderRecompiler::IR::SrtWalkerNoteProtectedPage(info->r10);
 			// The walker loads a DWORD from R10.
 			if (length != 0 && Libs::LibKernel::Memory::TryCurrentWalkerLoad(info->r10, &value)) {
 				Loader::X64InstructionEmulator::SkipLoad(info->native_context, length, value);

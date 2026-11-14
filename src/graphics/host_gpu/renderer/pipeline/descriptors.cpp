@@ -30,6 +30,10 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <cstring>
+#include <cstddef>
+#include <unordered_map>
+#include <xxhash.h>
 #include <atomic>
 #include <bit>
 #include <fmt/format.h>
@@ -514,6 +518,38 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		}
 	}
 
+	// The image description is a function of the descriptor words and the resource's scalar
+	// properties: resolved once per such pair (heap roots also depend on what is mapped).
+	struct TextureDescKey {
+		std::array<uint32_t, 8> words {};
+		std::array<uint8_t, offsetof(ShaderRecompiler::IR::ImageResource, indirect_root) -
+		                        offsetof(ShaderRecompiler::IR::ImageResource, resource_class)>
+		    resource {};
+		bool operator==(const TextureDescKey&) const = default;
+	};
+	struct TextureDescEntry {
+		TextureDescKey          key;
+		TextureCache::ImageDesc desc;
+		bool                    shader_conversion = false;
+		vk::Format              pixel_format {};
+		vk::Format              view_format {};
+		Prospero::BufferFormat  format {};
+	};
+	static thread_local std::unordered_map<uint64_t, TextureDescEntry> desc_memo;
+	const bool     memo_usable = !m_lod_stats && !resource.heap;
+	TextureDescKey memo_key {};
+	uint64_t       memo_hash = 0;
+	if (memo_usable) {
+		std::copy_n(value.dwords.begin(), 8, memo_key.words.begin());
+		std::memcpy(memo_key.resource.data(), &resource.resource_class, memo_key.resource.size());
+		memo_hash = XXH3_64bits(&memo_key, sizeof(memo_key));
+		if (const auto hit = desc_memo.find(memo_hash); hit != desc_memo.end() && hit->second.key == memo_key) {
+			auto desc = hit->second.desc;
+			return FinishTexture(resource, descriptor, std::move(desc), hit->second.shader_conversion,
+			                     hit->second.pixel_format, hit->second.view_format, hit->second.format);
+		}
+	}
+
 	const auto address         = descriptor.Base40();
 	const auto width           = static_cast<uint32_t>(descriptor.Width5()) + 1u;
 	const auto height          = static_cast<uint32_t>(descriptor.Height5()) + 1u;
@@ -647,8 +683,22 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	desc.view_info.base_level = view_base;
 	desc.type = storage ? TextureCache::BindingType::Storage : TextureCache::BindingType::Texture;
 	desc.heap = resource.heap;
+	if (memo_usable) {
+		if (desc_memo.size() > 8192) desc_memo.clear();
+		desc_memo[memo_hash] = {memo_key, desc, shader_conversion, pixel_format, view_format, format};
+	}
+	return FinishTexture(resource, descriptor, std::move(desc), shader_conversion, pixel_format, view_format,
+	                     format);
+}
 
-	auto id = texture_cache.FindImage(desc, shader_conversion);
+TextureBinding RenderExecutor::FinishTexture(const ShaderRecompiler::IR::ImageResource& resource,
+                                             const ShaderTextureResource& descriptor,
+                                             TextureCache::ImageDesc desc, bool shader_conversion,
+                                             vk::Format pixel_format, vk::Format view_format,
+                                             Prospero::BufferFormat format) {
+	auto&      texture_cache = m_context.GetTextureCache();
+	const bool storage       = resource.written;
+	auto       id            = texture_cache.FindImage(desc, shader_conversion);
 	if (!id) {
 		// Another extent at the address holds it; the heap retries once an image is created.
 		return {.desc = std::move(desc), .layout = vk::ImageLayout::eGeneral};
