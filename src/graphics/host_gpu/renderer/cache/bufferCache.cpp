@@ -812,7 +812,7 @@ void BufferCache::NoteProducerWait(uint64_t vaddr, uint64_t size, double ms) {
 	static constexpr auto     LearnWindow = std::chrono::seconds(2);
 	static constexpr uint32_t LearnWaits  = 20;
 	static constexpr double   LearnMs     = 20.0;
-	if (!m_scheduler.SideAvailable() || ms <= 0.05) return;
+	if (!m_scheduler.EarlyComputeEnabled() || ms <= 0.05) return;
 	auto it = m_readback_writers.upper_bound(vaddr + size - 1);
 	if (it == m_readback_writers.begin() || std::prev(it)->second.first <= vaddr) return;
 	const auto program = std::prev(it)->second.second;

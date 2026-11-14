@@ -1,4 +1,6 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/host_gpu/deviceLossReport.h"
+#include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include <cstdlib>
 
 #include "common/assert.h"
@@ -81,7 +83,18 @@ bool CommandScheduler::InDeferredOperation() noexcept {
 CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graphics)
     : m_master(graphics), m_side(graphics), m_context(context), m_graphics(graphics),
       m_command_pool(graphics, m_master), m_side_pool(graphics, m_master), m_command(*this),
-      m_priority_thread([this](std::stop_token stop) { PriorityOperationsThread(stop); }) {}
+      m_priority_thread([this](std::stop_token stop) { PriorityOperationsThread(stop); }) {
+	// Early compute removes the read-back waits run-time variants were learned for; their trials
+	// compile and test variants mid-game (a visible stall), so they stay off with it unless
+	// KYTY_GPU_SRT_LEARN=1.
+	const char* learn = std::getenv("KYTY_GPU_SRT_LEARN");
+	ShaderRecompiler::IR::SetRuntimeLearning(!EarlyComputeEnabled() || (learn != nullptr && learn[0] == '1'));
+}
+
+bool CommandScheduler::EarlyComputeEnabled() const noexcept {
+	static const char* setting = std::getenv("KYTY_EARLY_COMPUTE"); // 0 turns it off.
+	return SideAvailable() && !(setting != nullptr && setting[0] == '0');
+}
 
 CommandScheduler::~CommandScheduler() {
 	Shutdown();
@@ -342,6 +355,7 @@ uint64_t CommandScheduler::SubmitSide() {
 		result = m_graphics.side_queue.submit(1, &submit_info, nullptr);
 	}
 	if (result != vk::Result::eSuccess) {
+		ReportDeviceLoss(m_graphics, "side submit", static_cast<int>(result));
 		EXIT("vkQueueSubmit (side) failed: %s\n", vk::to_string(result).c_str());
 	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::QueueSubmits);
@@ -392,6 +406,7 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::QueueSubmits);
 
 	if (result != vk::Result::eSuccess) {
+		ReportDeviceLoss(m_graphics, "submit", static_cast<int>(result));
 		EXIT("vkQueueSubmit failed: %s, tick=%" PRIu64 "\n", vk::to_string(result).c_str(), tick);
 	}
 
