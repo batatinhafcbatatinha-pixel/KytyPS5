@@ -1,5 +1,4 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
-#include "common/fpsProbe.h" // FPSPROBE
 
 #include "common/assert.h"
 #include "common/debugCounters.h"
@@ -248,9 +247,10 @@ ShaderRecompiler::Spirv::Profile SpirvProfile(const GraphicContext& graphics) {
 }
 
 std::filesystem::path ShaderStorePath() {
-	// Programs compiled for the GPU-side SRT differ from the stored ones.
+	// A fixed GPU-side SRT mask (development) compiles programs unlike the stored ones.
 	if (KYTY_BUILD != KYTY_BUILD_RELEASE || !Config::ShaderCacheEnabled() ||
-	    Config::GraphicsDebugDumpEnabled() || ShaderRecompiler::IR::GpuSrtEnabled()) {
+	    Config::GraphicsDebugDumpEnabled() ||
+	    (ShaderRecompiler::IR::GpuSrtEnabled() && !ShaderRecompiler::IR::GpuSrtLearning())) {
 		return {};
 	}
 	const auto title_id = PipelineCacheTitleId();
@@ -318,7 +318,8 @@ ShaderModule& PipelineCache::CompileModule(Program& program, const ProgramKey& k
 	const auto function_code = program.FunctionCode();
 	ShaderRecompiler::IR::Writer inputs;
 	ShaderRecompiler::IR::IoAll(inputs, key.stage, key.hash, key.user_data_count, key.static_state,
-	                            info.bindings.push_data_start_dword, program.specialization);
+	                            key.runtime_srt, info.bindings.push_data_start_dword,
+	                            program.specialization);
 	inputs.Raw(function_code.data(), function_code.size_bytes()); // Last, so it needs no size.
 	const auto id = XXH3_64bits(inputs.bytes.data(), inputs.bytes.size());
 
@@ -393,6 +394,8 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 	m_lookup_key.stage           = options.stage;
 	m_lookup_key.hash            = params.hash;
 	m_lookup_key.user_data_count = params.user_data_count;
+	ShaderRecompiler::IR::LearningTick();
+	m_lookup_key.runtime_srt     = ShaderRecompiler::IR::IsRuntimeProgram(params.hash);
 	BuildStageStaticKey(input_info, m_lookup_key.static_state);
 	auto entry = m_program_cache.find(m_lookup_key);
 	const auto bind = [&](const ShaderModule& module) {
@@ -415,6 +418,7 @@ const ShaderModule* PipelineCache::GetProgram(const ShaderParams& params, InputI
 	}
 
 	options.shader_hash     = params.hash;
+	options.runtime_srt     = m_lookup_key.runtime_srt;
 	options.user_data       = user_data;
 	options.back_code       = params.back_code;
 	options.dump_ir         = Config::GetShaderLogDirection() != Config::LogDirection::Silent;
@@ -649,7 +653,6 @@ void PipelineCache::WriteDriverCache() const {
 }
 
 void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRenderState& state) {
-	FpsProbe::Scope fps_scope(FpsProbe::Programs); // FPSPROBE
 	const auto& context           = command.GetRegisters();
 	const auto& user_config       = command.GetUserConfig();
 	const auto& sh                = context.GetShaderRegisters();
@@ -874,7 +877,6 @@ void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRender
 
 const ShaderModule* PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs,
                                                      ShaderComputeInputInfo&      input_info) {
-	FpsProbe::Scope fps_scope(FpsProbe::Programs); // FPSPROBE
 	input_info.host_subgroup_size = m_graphics.SupportsComputeWave64() ? 64u : 32u;
 	const auto        params      = PrepareProgram(regs, input_info);
 	input_info.lds_storage = input_info.lds_size_dwords * 4u >
@@ -886,7 +888,6 @@ const ShaderModule* PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo
 PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&   command,
                                                             const DrawRenderState& state,
                                                             const DrawTargets&     targets) {
-	FpsProbe::Scope fps_scope(FpsProbe::Pipeline); // FPSPROBE
 	const auto* colors        = targets.colors;
 	const auto& depth         = targets.depth;
 	const auto  vertex_info   = state.VertexStages();
@@ -1079,7 +1080,6 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 }
 
 PipelineCache::Pipeline& PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info) {
-	FpsProbe::Scope fps_scope(FpsProbe::Pipeline); // FPSPROBE
 	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(Compute)", profiler::colors::RedA100);
 
 	const auto& module = *input_info.stage.module;

@@ -1,6 +1,4 @@
-#include "graphics/host_gpu/renderer/gpuTimer.h" // PROBE
 #include "common/assert.h"
-#include "common/fpsProbe.h" // FPSPROBE
 #include "common/common.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
@@ -273,7 +271,6 @@ static bool HasStorageWrites(const ShaderComputeInputInfo& input_info,
 void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group_x,
                                     uint32_t thread_group_y, uint32_t thread_group_z, uint32_t mode,
                                     bool async_compute) {
-	FpsProbe::Scope fps_scope(FpsProbe::Dispatch); // FPSPROBE
 	m_context.GetCommandScheduler().PopPendingOperations();
 	auto& sh_ctx = buffer.GetShaders();
 
@@ -448,8 +445,6 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 	}
 
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
-	GpuTimer::Scope gpu_timer(buffer, m_context.GetCommandScheduler(), // PROBE
-	                          input_info.stage.module->info.shader_hash, 0);
 	constexpr uint32_t DISPATCH_INITIATOR_ORDERED_APPEND_ENABLE = 1u << 3u;
 	const uint64_t     group_threads = uint64_t {std::max(input_info.threads_num[0], 1u)} *
 	                                   std::max(input_info.threads_num[1], 1u) *
@@ -480,7 +475,6 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 
 void RenderExecutor::DispatchIndirect(CommandBuffer& buffer, uint64_t args_addr, uint32_t mode,
                                       bool async_compute) {
-	FpsProbe::Scope fps_scope(FpsProbe::Dispatch); // FPSPROBE
 	EXIT_IF(args_addr == 0 || (args_addr & 3u) != 0 ||
 	        (mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0);
 	m_context.GetCommandScheduler().PopPendingOperations();
@@ -536,8 +530,6 @@ void RenderExecutor::DispatchIndirect(CommandBuffer& buffer, uint64_t args_addr,
 	                          vk::PipelineStageFlagBits::eDrawIndirect, {},
 	                          1, &barrier, 0, nullptr, 0, nullptr);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
-	GpuTimer::Scope gpu_timer(buffer, m_context.GetCommandScheduler(), // PROBE
-	                          input_info.stage.module->info.shader_hash, 1);
 	vk_buffer.dispatchIndirect(args_buffer->Handle(), args_offset);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Dispatches);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);

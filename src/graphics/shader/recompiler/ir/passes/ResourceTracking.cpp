@@ -1,12 +1,15 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceTracking.h"
 
 #include "common/assert.h"
+#include "common/frameClock.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <mutex>
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -25,14 +28,225 @@
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
-static uint32_t GpuSrtMask() {
-	static const uint32_t mask = [] {
+// KYTY_GPU_SRT unset: vertex fetch on the GPU for every program, and run-time descriptors for the
+// programs whose CPU walk keeps waiting for words the GPU wrote, kept only when the frame rate
+// improves (see Learning). 0 turns all of it off. Any other value is a fixed mask of GpuSrtPart
+// for every program, without learning (development of the GPU-side SRT).
+struct GpuSrtConfig {
+	uint32_t mask     = 0;
+	bool     learning = false;
+};
+
+static const GpuSrtConfig& GetGpuSrtConfig() {
+	static const GpuSrtConfig config = [] {
 		const char* value = std::getenv("KYTY_GPU_SRT");
-		if (value == nullptr) return 0u;
-		const auto parsed = static_cast<uint32_t>(std::strtoul(value, nullptr, 0));
-		return parsed;
+		if (value == nullptr) {
+			return GpuSrtConfig {GpuSrtDefaultParts | GpuSrtAutoParts, true};
+		}
+		return GpuSrtConfig {static_cast<uint32_t>(std::strtoul(value, nullptr, 0)), false};
 	}();
-	return mask;
+	return config;
+}
+
+static bool GpuSrtAuto() {
+	return GetGpuSrtConfig().learning;
+}
+
+static uint32_t GpuSrtMask() {
+	return GetGpuSrtConfig().mask;
+}
+
+namespace {
+
+// Programs whose run-time variant is in use.
+struct LearnedPrograms {
+	std::mutex                   mutex;
+	std::unordered_set<uint64_t> hashes;
+};
+
+LearnedPrograms& Learned() {
+	static LearnedPrograms learned;
+	return learned;
+}
+
+thread_local uint64_t t_gpu_srt_program = 0;
+thread_local uint64_t t_walked_program  = 0;
+thread_local bool     t_runtime_variant = false;
+
+} // namespace
+
+void SetGpuSrtProgram(uint64_t hash, bool runtime_variant) {
+	t_gpu_srt_program = hash;
+	t_runtime_variant = runtime_variant;
+}
+
+bool GpuSrtLearning() {
+	return GpuSrtAuto();
+}
+
+uint32_t GpuSrtStoreTag() {
+	return GpuSrtMask() | (GpuSrtAuto() ? 0x80000000u : 0u);
+}
+
+bool IsRuntimeProgram(uint64_t hash) {
+	if (!GpuSrtAuto()) return false;
+	auto&           learned = Learned();
+	std::lock_guard lock(learned.mutex);
+	return learned.hashes.contains(hash);
+}
+
+static void SetRuntimeProgram(uint64_t hash, bool runtime) {
+	auto&           learned = Learned();
+	std::lock_guard lock(learned.mutex);
+	if (runtime) {
+		learned.hashes.insert(hash);
+	} else {
+		learned.hashes.erase(hash);
+	}
+}
+
+namespace {
+
+// Learning runs on the GPU thread only. A candidate waited LearnWaits times and LearnMs in total
+// within LearnWindow (one-off waits, such as while loading, do not count). One candidate at a
+// time: after a settle time for compiling its run-time variant, the old (A) and the run-time (B)
+// variant take turns, A B A B ... A, and each B slot is compared with the mean of the A slots
+// around it, which cancels slow changes of the scene. The median of these ratios decides: at least
+// KeepGain keeps the variant, anything below leaves the old one. A program not kept may be tried
+// again after RetryDelay (the scene may have changed), at most MaxTrials times in all. Taking a reader off the
+// walk often moves the wait to the next reader of the same GPU output, the next candidate.
+struct Learning {
+	static constexpr auto     LearnWindow = std::chrono::seconds(2);
+	static constexpr uint32_t LearnWaits  = 20;
+	static constexpr double   LearnMs     = 20.0;
+	static constexpr auto     SettleTime  = std::chrono::seconds(2);
+	static constexpr auto     SlotTime    = std::chrono::milliseconds(1500);
+	static constexpr auto     SkipTime    = std::chrono::milliseconds(250); // Frames in flight.
+	static constexpr uint32_t Pairs       = 5;
+	static constexpr double   KeepGain    = 1.02;
+	static constexpr auto     RetryDelay  = std::chrono::seconds(20);
+	static constexpr uint32_t MaxTrials   = 3;
+
+	enum class Phase { Idle, Settle, Slots };
+	struct Window {
+		std::chrono::steady_clock::time_point start;
+		uint32_t                              waits = 0;
+		double                                ms    = 0;
+	};
+	struct History {
+		bool                                  kept   = false;
+		uint32_t                              trials = 0;
+		std::chrono::steady_clock::time_point retry;
+	};
+	std::unordered_map<uint64_t, Window>  windows;
+	std::unordered_map<uint64_t, History> history;
+	Phase                                 phase   = Phase::Idle;
+	uint64_t                              program = 0;
+	std::chrono::steady_clock::time_point start;
+	uint32_t                              slot     = 0; // Even: old variant, odd: run-time variant.
+	bool                                  counting = false;
+	uint64_t                              flips    = 0;
+	std::vector<double>                   fps;      // One per slot.
+	uint32_t                              ticks    = 0;
+};
+
+Learning& GetLearning() {
+	static Learning learning;
+	return learning;
+}
+
+void BeginSlot(Learning& l, std::chrono::steady_clock::time_point now) {
+	SetRuntimeProgram(l.program, (l.slot & 1u) != 0);
+	l.start    = now;
+	l.counting = false;
+}
+
+} // namespace
+
+void NoteDescriptorWait(uint64_t program, double ms) {
+	if (!GpuSrtAuto() || program == 0 || ms <= 0.05) return;
+	auto& l = GetLearning();
+	if (l.phase != Learning::Phase::Idle) return;
+	const auto now = std::chrono::steady_clock::now();
+	if (const auto past = l.history.find(program); past != l.history.end()) {
+		const auto& h = past->second;
+		if (h.kept || h.trials >= Learning::MaxTrials || now < h.retry) return;
+	}
+	auto& window = l.windows[program];
+	if (window.waits == 0 || now - window.start > Learning::LearnWindow) window = {now, 0, 0};
+	window.waits++;
+	window.ms += ms;
+	if (window.waits < Learning::LearnWaits || window.ms < Learning::LearnMs) return;
+	l.windows.clear();
+	l.phase   = Learning::Phase::Settle;
+	l.program = program;
+	l.start   = now;
+	SetRuntimeProgram(program, true);
+	std::printf("[autosrt] trial %016llx (%u waits, %.1f ms in %.1f s)\n",
+	            static_cast<unsigned long long>(program), window.waits, window.ms,
+	            std::chrono::duration<double>(now - window.start).count());
+	std::fflush(stdout);
+}
+
+void LearningTick() {
+	auto& l = GetLearning();
+	if (l.phase == Learning::Phase::Idle || (++l.ticks & 63u) != 0) return;
+	const auto now = std::chrono::steady_clock::now();
+	if (l.phase == Learning::Phase::Settle) {
+		if (now - l.start < Learning::SettleTime) return;
+		l.phase = Learning::Phase::Slots;
+		l.slot  = 0;
+		l.fps.clear();
+		BeginSlot(l, now);
+		return;
+	}
+	if (!l.counting) {
+		if (now - l.start < Learning::SkipTime) return;
+		l.counting = true;
+		l.flips    = Common::FrameClock::Flips();
+		l.start    = now;
+		return;
+	}
+	if (now - l.start < Learning::SlotTime - Learning::SkipTime) return;
+	const double seconds = std::chrono::duration<double>(now - l.start).count();
+	l.fps.push_back(static_cast<double>(Common::FrameClock::Flips() - l.flips) / seconds);
+	if (++l.slot < 2 * Learning::Pairs + 1) {
+		BeginSlot(l, now);
+		return;
+	}
+	std::vector<double> ratios;
+	double              old_sum = 0;
+	double              new_sum = 0;
+	for (uint32_t i = 1; i < l.fps.size(); i += 2) {
+		const double around = (l.fps[i - 1] + l.fps[i + 1]) / 2;
+		ratios.push_back(around > 0 ? l.fps[i] / around : 1.0);
+		old_sum += around;
+		new_sum += l.fps[i];
+	}
+	std::ranges::sort(ratios);
+	const double median = ratios[ratios.size() / 2];
+	auto&        h      = l.history[l.program];
+	const bool   keep   = median >= Learning::KeepGain;
+	const bool   reject = median < 1.0;
+	h.kept              = keep;
+	h.trials++;
+	h.retry = now + Learning::RetryDelay;
+	SetRuntimeProgram(l.program, keep);
+	std::printf("[autosrt] %s %016llx: %.1f -> %.1f fps, median ratio %.3f (trial %u)\n",
+	            keep ? "kept" : reject ? "rejected" : "inconclusive",
+	            static_cast<unsigned long long>(l.program), old_sum / Learning::Pairs,
+	            new_sum / Learning::Pairs, median, h.trials);
+	std::fflush(stdout);
+	l.windows.clear();
+	l.phase = Learning::Phase::Idle;
+}
+
+void SetWalkedProgram(uint64_t hash) {
+	t_walked_program = hash;
+}
+
+uint64_t WalkedProgram() {
+	return t_walked_program;
 }
 
 bool GpuSrtEnabled() {
@@ -40,9 +254,14 @@ bool GpuSrtEnabled() {
 }
 
 bool GpuSrtPartEnabled(uint32_t part) {
+	// While a program is tracked, only the run-time variant of a learned program takes the
+	// run-time parts; the default parts apply to every program.
+	if (GpuSrtAuto() && t_gpu_srt_program != 0 && !t_runtime_variant &&
+	    (part & GpuSrtDefaultParts) == 0u) {
+		return false;
+	}
 	return (GpuSrtMask() & part) != 0u;
 }
-
 
 static std::atomic<uint64_t> g_global_map_address {0};
 
@@ -58,19 +277,6 @@ static std::atomic<bool> g_host_bda_writes {false};
 
 void SetHostBdaWrites(bool enabled) {
 	g_host_bda_writes.store(enabled, std::memory_order_relaxed);
-}
-
-bool FormattedVectorRuntime() {
-	static const bool enabled = [] {
-		const char* value = std::getenv("KYTY_FMT_VECTOR");
-		return value == nullptr || value[0] != '0';
-	}();
-	return enabled;
-}
-
-bool NoRuntimeStores() {
-	static const bool disabled = std::getenv("KYTY_NO_RT_STORES") != nullptr;
-	return disabled;
 }
 
 bool HostBdaWrites() {
@@ -972,20 +1178,6 @@ private:
 		                                                       : ResourceKind::Buffer) ||
 		    (!memory.SupportsIndirectBufferLoad(op) && !memory.SupportsIndirectBufferWrite(op))) {
 			return false;
-		}
-		// TEST (temporary): KYTY_FMT_STAGES limits multi-component formatted run-time loads by
-		// stage (1 vertex, 2 pixel, 4 compute, 8 other).
-		if (memory.formatted && op != ValueOpcode::LoadBufferU32) {
-			static const uint32_t stages = [] {
-				const char* value = std::getenv("KYTY_FMT_STAGES");
-				return value == nullptr ? 15u : static_cast<uint32_t>(std::strtoul(value, nullptr, 0));
-			}();
-			const auto stage = m_program.stage;
-			const uint32_t bit = stage == ShaderType::Vertex || stage == ShaderType::Local ? 1u
-			                   : stage == ShaderType::Pixel                                 ? 2u
-			                   : stage == ShaderType::Compute                               ? 4u
-			                                                                                : 8u;
-			if ((stages & bit) == 0u) return false;
 		}
 		const auto* handle = inst.Arg(0).Resolve().TryInstruction();
 		if (handle == nullptr || handle->GetOpcode() != ValueOpcode::GetBufferResource ||

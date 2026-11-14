@@ -883,13 +883,9 @@ bool ReadGpuTable(uint64_t vaddr, void* data, uint64_t size) {
 	return g_gpu_resources->GetBufferCache().ReadTable(vaddr, size, data);
 }
 
-bool TrySpeculativeWalkerLoad(uint64_t vaddr, uint32_t* value) noexcept {
+bool TryCurrentWalkerLoad(uint64_t vaddr, uint32_t* value) noexcept {
 	return g_gpu_resources != nullptr && Graphics::GuestGpu::IsGpuThread() &&
-	       g_gpu_resources->GetBufferCache().TrySpeculativeWalkerLoad(vaddr, *value);
-}
-
-void DescribeGpuPage(uint64_t vaddr) noexcept { // PROBE
-	if (g_gpu_resources != nullptr) g_gpu_resources->GetBufferCache().DescribePage(vaddr);
+	       g_gpu_resources->GetBufferCache().TryCurrentWalkerLoad(vaddr, *value);
 }
 
 bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept {

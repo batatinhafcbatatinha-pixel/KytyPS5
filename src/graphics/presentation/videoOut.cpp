@@ -5,6 +5,7 @@
 #include "common/common.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
+#include "common/frameClock.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
@@ -886,6 +887,7 @@ bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRe
 	pending.push_back(r);
 	request_id = r.id;
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::FlipsRequested);
+	Common::FrameClock::NoteFlip();
 
 	cfg.flip_status.flipPendingNum++;
 	cfg.flip_status.submitProcessTimeCounter = r.submit_ptc;

@@ -21,6 +21,7 @@ struct CompileOptions {
 	uint32_t                    wave_size       = 64;
 	uint32_t                    user_data_base  = 0;
 	uint64_t                    shader_hash     = 0;
+	bool                        runtime_srt     = false; // Variant with run-time descriptors.
 	bool                        dump_ir                    = true;
 	bool                        emit_debug_info            = false;
 	const Spirv::Profile*       profile                    = &Spirv::DefaultProfile;

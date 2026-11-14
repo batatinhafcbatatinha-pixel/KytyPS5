@@ -101,7 +101,6 @@ public:
 	void               ClearGpuModified() noexcept { m_gpu_modified = false; }
 
 	[[nodiscard]] bool IsBufferModified() const noexcept { return m_buffer_modified; }
-	int                probe_mark = 0; // FPSPROBE
 	void               MarkBufferModified() noexcept {
 		m_buffer_modified = true;
 		HeapChanged();

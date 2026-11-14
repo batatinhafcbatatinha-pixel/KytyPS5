@@ -695,9 +695,6 @@ auto EmitImageAccess(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t resul
 		                            ConstantU32(state, (1u << IR::ImageHeapKindShift) - 1u));
 		// Arms alternate plain and cube; only 2D arrays can hold cubes.
 		const bool cubes = image.dimension == ImageDimension::Dim2DArray;
-		// TEST (temporary): KYTY_ONE_ARM=1 emits only the Float plain arm.
-		static const bool one_arm = std::getenv("KYTY_ONE_ARM") != nullptr;
-		if (one_arm) return emit(image.indirect_resources[1], element);
 		auto arm = Binary(state, spv::OpShiftRightLogical, TypeU32(state), entry,
 		                  ConstantU32(state, IR::ImageHeapKindShift + (cubes ? 0u : 1u)));
 		return EmitIndexSwitch(state, arm, cubes ? IR::GlobalImageArms : IR::GlobalImageArms / 2u,

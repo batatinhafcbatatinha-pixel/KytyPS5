@@ -1,5 +1,4 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
-#include "common/fpsProbe.h" // FPSPROBE
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -17,12 +16,7 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
-#include <chrono> // FPSPROBE
-#include <cstdio> // FPSPROBE
-#include <cstdlib> // FPSPROBE
-#include <map> // FPSPROBE
-#include <string> // FPSPROBE
-#include <unordered_map> // FPSPROBE
+#include <chrono>
 #include <cinttypes>
 #include <cstring>
 #include <memory>
@@ -30,180 +24,6 @@
 #include <vector>
 
 namespace Libs::Graphics {
-
-namespace {
-// FPSPROBE: temporary read-back statistics (env KYTY_PROFILE_GPU_WAITS).
-bool ProbeEnabled() {
-	static const bool enabled = std::getenv("KYTY_PROFILE_GPU_WAITS") != nullptr;
-	return enabled;
-}
-std::unordered_map<uint64_t, uint64_t>& ProbeWriteTicks() {
-	static std::unordered_map<uint64_t, uint64_t> ticks;
-	return ticks;
-}
-uint64_t ProbeEager(uint64_t bytes, bool take_count = false, bool take_bytes = false) {
-	static uint64_t count = 0, total = 0;
-	if (take_count) { const auto value = count; count = 0; return value; }
-	if (take_bytes) { const auto value = total; total = 0; return value; }
-	count++;
-	total += bytes;
-	return 0;
-}
-void ProbeRecordWrite(uint64_t vaddr, uint64_t size, uint64_t tick) {
-	static const bool age = std::getenv("KYTY_PROBE_AGE") != nullptr;
-	if (!age || size == 0 || size > (uint64_t {64} << 20u)) return;
-	for (uint64_t page = vaddr >> 12u; page <= (vaddr + size - 1) >> 12u; ++page) {
-		ProbeWriteTicks()[page] = tick;
-	}
-}
-void ProbeValue(bool same) {
-	static uint64_t counts[2] {};
-	static auto     last = std::chrono::steady_clock::now();
-	counts[same ? 1 : 0]++;
-	const auto now = std::chrono::steady_clock::now();
-	if (std::chrono::duration<double>(now - last).count() < 5.0) return;
-	std::printf("[walkval] gpu-thread waited words: same=%llu changed=%llu\n", (unsigned long long)counts[1], (unsigned long long)counts[0]);
-	std::fflush(stdout);
-	counts[0] = counts[1] = 0;
-	last = now;
-}
-void ProbeSpeculation(bool hit) {
-	static uint64_t hits = 0, misses = 0;
-	static auto     last = std::chrono::steady_clock::now();
-	(hit ? hits : misses)++;
-	const auto now = std::chrono::steady_clock::now();
-	if (std::chrono::duration<double>(now - last).count() < 5.0) return;
-	std::printf("[speculate] walker loads=%llu mismatches=%llu\n", (unsigned long long)hits, (unsigned long long)misses);
-	std::fflush(stdout);
-	hits = misses = 0;
-	last = now;
-}
-void ProbeRecordRead(uint64_t vaddr, uint64_t size, uint64_t current, bool dirty, bool gpu_thread,
-                     std::source_location caller, std::chrono::steady_clock::time_point start) {
-	if (!ProbeEnabled()) return;
-	const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-	uint64_t newest = 0;
-	for (uint64_t page = vaddr >> 12u; page <= (vaddr + size - 1) >> 12u; ++page) {
-		if (auto it = ProbeWriteTicks().find(page); it != ProbeWriteTicks().end()) {
-			newest = std::max(newest, it->second);
-		}
-	}
-	const uint64_t age    = newest == 0 ? 999 : current - newest;
-	const int      bucket = age == 0 ? 0 : age == 1 ? 1 : age <= 4 ? 2 : age < 999 ? 3 : 4;
-	struct Row {
-		uint64_t count[5] {};
-		double   ms = 0;
-	};
-	static std::map<std::string, Row> rows;
-	static auto last = std::chrono::steady_clock::now();
-	char key[512];
-	std::snprintf(key, sizeof(key), "%s:%u %s %s", caller.file_name(), static_cast<unsigned>(caller.line()),
-	              gpu_thread ? "gpu-thread" : "cpu-thread", dirty ? "dirty" : "clean");
-	auto& row = rows[key];
-	row.count[bucket]++;
-	row.ms += ms;
-	const auto now = std::chrono::steady_clock::now();
-	if (std::chrono::duration<double>(now - last).count() < 5.0) return;
-	for (const auto& [name, value]: rows) {
-		std::printf("[readback] %s age(cur,1,2-4,5+,unk)=%llu,%llu,%llu,%llu,%llu ms=%.1f\n", name.c_str(),
-		            (unsigned long long)value.count[0], (unsigned long long)value.count[1],
-		            (unsigned long long)value.count[2], (unsigned long long)value.count[3],
-		            (unsigned long long)value.count[4], value.ms);
-	}
-	std::fflush(stdout);
-	rows.clear();
-	last = now;
-}
-
-// PROBE (temporary): every read-back wait with its demanded bytes and the producer of that range
-// (env KYTY_PROFILE_GPU_WAITS, aggregated every 10 s as [wait]).
-struct ProducerWrite {
-	uint64_t end      = 0;
-	uint64_t producer = 0;
-	uint64_t tick     = 0;
-};
-std::map<uint64_t, ProducerWrite>& ProbeProducers() {
-	static std::map<uint64_t, ProducerWrite> writes;
-	return writes;
-}
-void ProbeRecordProducer(uint64_t vaddr, uint64_t size, uint64_t tick) {
-	if (!ProbeEnabled() || size == 0) return;
-	auto& writes = ProbeProducers();
-	// Newest write wins over the ranges it covers.
-	auto it = writes.lower_bound(vaddr);
-	if (it != writes.begin() && std::prev(it)->second.end > vaddr) --it;
-	while (it != writes.end() && it->first < vaddr + size) {
-		if (it->first >= vaddr && it->second.end <= vaddr + size) {
-			it = writes.erase(it);
-		} else {
-			++it;
-		}
-	}
-	writes[vaddr] = {vaddr + size, FpsProbe::g_producer, tick};
-	if (writes.size() > 200000) writes.erase(writes.begin());
-}
-struct WaitProbe {
-	uint64_t             vaddr = 0, size = 0, current = 0, downloaded = 0;
-	bool                 gpu_thread = false, page_dirty = false, bytes_dirty = false, eager_bytes = false;
-	double               eager_ms = 0, download_ms = 0;
-	std::source_location caller;
-};
-void ProbeRecordWait(const WaitProbe& probe, CommandScheduler& scheduler) {
-	if (!ProbeEnabled()) return;
-	const double ms = probe.eager_ms + probe.download_ms;
-	// The newest write overlapping the demanded bytes, else the nearest one before them (window).
-	auto&         writes   = ProbeProducers();
-	ProducerWrite producer {};
-	bool          exact    = false;
-	auto it = writes.upper_bound(probe.vaddr + probe.size - 1);
-	if (it != writes.begin()) {
-		--it;
-		exact    = it->second.end > probe.vaddr;
-		producer = it->second;
-	}
-	const char* kind = probe.bytes_dirty ? "bytes" : probe.page_dirty ? "page-only" : probe.eager_bytes ? "eager-bytes"
-	                 : ms > 0.05 ? "window-only" : "none";
-	const uint64_t age = producer.tick == 0 ? 999 : probe.current - producer.tick;
-	struct Row {
-		uint64_t count = 0, downloaded = 0, waits = 0;
-		double   ms    = 0;
-		std::map<uint64_t, uint64_t> ranges;
-	};
-	static std::map<std::string, Row> rows;
-	static double total_ms[2] {};
-	static auto   last = std::chrono::steady_clock::now();
-	char key[512];
-	std::snprintf(key, sizeof(key), "%s %s producer=%016llx%s age=%s caller=%s:%u",
-	              probe.gpu_thread ? "gpu" : "cpu", kind, static_cast<unsigned long long>(producer.producer),
-	              exact ? "" : "(near)", age == 0 ? "0" : age == 1 ? "1" : age <= 4 ? "2-4" : age < 999 ? "5+" : "unk",
-	              probe.caller.file_name() + std::max<int>(0, static_cast<int>(std::strlen(probe.caller.file_name())) - 40),
-	              static_cast<unsigned>(probe.caller.line()));
-	auto& row = rows[key];
-	row.count++;
-	row.ms += ms;
-	row.waits += ms > 0.05 ? 1 : 0;
-	row.downloaded += probe.downloaded;
-	row.ranges[probe.vaddr >> 12u]++;
-	total_ms[probe.gpu_thread ? 1 : 0] += ms;
-	const auto now = std::chrono::steady_clock::now();
-	if (std::chrono::duration<double>(now - last).count() < 10.0) return;
-	std::vector<std::pair<double, const std::string*>> order;
-	for (const auto& [name, row_value]: rows) order.emplace_back(row_value.ms, &name);
-	std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-	std::printf("[wait] 10 s totals: gpu-thread=%.0f ms cpu-threads=%.0f ms\n", total_ms[1], total_ms[0]);
-	for (size_t i = 0; i < std::min<size_t>(order.size(), 20); i++) {
-		const auto& r = rows[*order[i].second];
-		std::printf("[wait] ms=%.0f reads=%llu waited=%llu pages=%zu down_kib=%llu %s\n", r.ms,
-		            static_cast<unsigned long long>(r.count), static_cast<unsigned long long>(r.waits),
-		            r.ranges.size(), static_cast<unsigned long long>(r.downloaded >> 10u), order[i].second->c_str());
-	}
-	std::fflush(stdout);
-	rows.clear();
-	total_ms[0] = total_ms[1] = 0;
-	last = now;
-	(void)scheduler;
-}
-} // namespace
 
 namespace {
 
@@ -236,7 +56,6 @@ std::pair<Buffer*, uint64_t> UploadMemory(GraphicContext& graphics, CommandSched
 
 void BufferCache::WriteDataBuffer(Buffer& buffer, uint64_t address, const void* source,
                                   uint64_t size) {
-	FpsProbe::CountEvent(FpsProbe::PageTableWrites); // PROBE
 	auto* bytes = static_cast<const uint8_t*>(source);
 	while (size != 0) {
 		const auto chunk  = std::min(size, m_staging_buffer.Size());
@@ -485,71 +304,50 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 	QueueBdaSync(vaddr, size, true);
 }
 
-void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write,
-                             std::source_location caller) {
-	const bool from_gpu_thread = GuestGpu::IsGpuThread(); // FPSPROBE
-	if (!GuestGpu::IsGpuThread() && CommandScheduler::InDeferredOperation()) {
+void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
+	// The GPU thread itself reading back, such as a descriptor walk recording a draw.
+	const bool from_gpu_thread = GuestGpu::IsGpuThread();
+	if (!from_gpu_thread && CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported buffer readback from an asynchronous GPU completion, "
 		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
 		     vaddr, size);
 	}
-	m_scheduler.Context().GetGpu().SendCommandSync([this, vaddr, size, is_write, caller, from_gpu_thread] {
-	FpsProbe::Scope fps_scope(FpsProbe::ReadBack); // FPSPROBE
+	m_scheduler.Context().GetGpu().SendCommandSync([this, vaddr, size, is_write, from_gpu_thread] {
 		if (is_write && !IsRegionRegistered(vaddr, size)) {
 			return;
 		}
-		// A walker fault on the GPU thread: compare the guest word before and after the wait.
-		uint32_t   walker_before = 0;
-		const auto walker_word   = Common::AlignDown(vaddr, 4);
-		const bool walker_read   = GuestGpu::IsGpuThread() && size <= 4 &&
-		                         (IsRegionGpuModified(vaddr, size) || HasEagerDownloads(vaddr, size)) &&
-		                         LibKernel::Memory::TryReadBacking(walker_word, &walker_before, 4);
-		// PROBE: classify what this read demands before anything changes state.
-		WaitProbe probe;
-		probe.vaddr       = vaddr;
-		probe.size        = size;
-		probe.gpu_thread  = from_gpu_thread;
-		probe.caller      = caller;
-		probe.page_dirty  = IsRegionGpuModified(vaddr, size);
-		probe.bytes_dirty = m_gpu_modified_ranges.Intersects(vaddr, size);
-		probe.eager_bytes = m_eager_pending.Intersects(vaddr, size);
-		probe.current     = m_scheduler.CurrentTick();
-		const auto probe_begin = std::chrono::steady_clock::now();
+		// Bytes a GPU write covers, not just other bytes of a GPU-written page: a true dependency
+		// of the draw being recorded, reported to the program learning.
+		const bool gpu_bytes = from_gpu_thread && (m_gpu_modified_ranges.Intersects(vaddr, size) ||
+		                                           m_eager_pending.Intersects(vaddr, size));
+		const auto wait_begin =
+		    gpu_bytes ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
 		{
 			const auto window = Common::AlignDown(vaddr, DownloadWindowSize);
 			CompleteEagerDownloads(window,
 			                       std::max(window + DownloadWindowSize, vaddr + size) - window,
 			                       false);
 		}
-		probe.eager_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - probe_begin).count();
 		// Only small reads, such as faults and descriptor loads, predict later read-backs.
 		if (size <= 16 * TRACKER_PAGE_SIZE && IsRegionGpuModified(vaddr, size)) {
 			const auto page = Common::AlignDown(vaddr, TRACKER_PAGE_SIZE);
 			m_readback_pages.Add(page, Common::AlignUp(vaddr + size, TRACKER_PAGE_SIZE) - page);
 		}
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
-		const auto probe_start = std::chrono::steady_clock::now(); // FPSPROBE
-		const bool probe_dirty = IsRegionGpuModified(vaddr, size); // FPSPROBE
-		const auto probe_tick  = m_scheduler.CurrentTick(); // FPSPROBE
 		if (IsRegionGpuModified(vaddr, size)) {
 			const auto start =
 			    std::max(Common::AlignDown(vaddr, DownloadWindowSize), buffer.CpuAddress());
 			const auto end = std::min(std::max(start + DownloadWindowSize, vaddr + size),
 			                          buffer.CpuAddress() + buffer.Size());
-			probe.downloaded = end - start;
-			const auto download_begin = std::chrono::steady_clock::now();
 			if (DownloadBufferMemory<false>(buffer, start, end - start)) {
 				m_memory_tracker.UnmarkRegionAsGpuModified(start, end - start);
 			}
-			probe.download_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - download_begin).count();
 		}
-		ProbeRecordWait(probe, m_scheduler); // PROBE
-		ProbeRecordRead(vaddr, size, probe_tick, probe_dirty, from_gpu_thread, caller, probe_start); // FPSPROBE
-		if (walker_read) {
-			uint32_t walker_after = walker_before;
-			(void)LibKernel::Memory::TryReadBacking(walker_word, &walker_after, 4);
-			ProbeValue(walker_after == walker_before); // FPSPROBE
-			LearnWalkerWord(walker_word, walker_before, walker_after);
+		if (gpu_bytes) {
+			ShaderRecompiler::IR::NoteDescriptorWait(
+			    ShaderRecompiler::IR::WalkedProgram(),
+			    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wait_begin)
+			        .count());
 		}
 		if (is_write) {
 			m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
@@ -700,7 +498,6 @@ void BufferCache::UploadCopies(std::span<const BufferUpload> uploads,
 	if (copies.empty()) {
 		return;
 	}
-	FpsProbe::CountEvent(FpsProbe::Uploads); // PROBE
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::BufferUploadBytes, total_size);
 
 	const auto source = UploadMemory(
@@ -784,8 +581,6 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		if (fresh) WriteBdaEntries(begin, end);
 	}
 	if (is_written) {
-		ProbeRecordWrite(vaddr, size, m_scheduler.CurrentTick()); // FPSPROBE
-		ProbeRecordProducer(vaddr, size, m_scheduler.CurrentTick()); // PROBE
 		m_gpu_modified_ranges.Add(vaddr, size);
 		ForgetColorMetadataChecks(vaddr, size);
 		m_readback_pages.ForEachInRange(vaddr, size, [this](uint64_t begin, uint64_t end) {
@@ -841,7 +636,6 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	}
 
 	m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
-	FpsProbe::g_producer = FpsProbe::ProducerFill; // PROBE
 	auto [dst, dst_offset] = ObtainBuffer(vaddr, size, true, true);
 	dst->Fill(dst_offset, size, value);
 }
@@ -880,7 +674,6 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	const auto dst_id      = dst_memory ? FindBuffer(dst_vaddr, size) : BufferId {};
 	auto [src, src_offset] = src_memory ? ObtainBuffer(src_vaddr, size, false, true, src_id)
 	                                    : std::pair {&m_gds_buffer, src_vaddr};
-	FpsProbe::g_producer = FpsProbe::ProducerCopy; // PROBE
 	auto [dst, dst_offset] = dst_memory ? ObtainBuffer(dst_vaddr, size, true, true, dst_id)
 	                                    : std::pair {&m_gds_buffer, dst_vaddr};
 	dst->CopyFrom(command, *src, src_offset, dst_offset, size);
@@ -957,103 +750,31 @@ bool BufferCache::HasEagerDownloads(uint64_t vaddr, uint64_t size) const {
 	return m_eager_pending.Intersects(vaddr, size);
 }
 
-bool BufferCache::TrySpeculativeWalkerLoad(uint64_t vaddr, uint32_t& value) {
-	static const bool enabled = std::getenv("KYTY_SRT_SPECULATE") != nullptr; // ABTEST
-	if (!enabled) {
-		return false;
-	}
-	if (!StableWord(vaddr) || !LibKernel::Memory::TryReadBacking(vaddr, &value, sizeof(value))) {
-		return false;
-	}
-	m_speculations.insert_or_assign(vaddr, value);
-	ProbeSpeculation(true); // FPSPROBE
-	return true;
+bool BufferCache::TryCurrentWalkerLoad(uint64_t vaddr, uint32_t& value) {
+	// A walker word that no GPU write covers is current in guest memory even when its page is
+	// GPU-modified (a GPU write elsewhere in the page): complete the load without waiting.
+	return GuestGpu::IsGpuThread() && !m_gpu_modified_ranges.Intersects(vaddr, sizeof(value)) &&
+	       !m_eager_pending.Intersects(vaddr, sizeof(value)) &&
+	       LibKernel::Memory::TryReadBacking(vaddr, &value, sizeof(value));
 }
 
 bool BufferCache::ReadTable(uint64_t vaddr, uint64_t size, void* data) {
-	if (!IsRegionGpuModified(vaddr, size) && !HasEagerDownloads(vaddr, size)) {
+	// Bytes no GPU write covers hold their newest value in guest memory, even when a GPU write
+	// elsewhere in their page marks the page GPU-modified: read them without waiting.
+	if (!m_gpu_modified_ranges.Intersects(vaddr, size) && !m_eager_pending.Intersects(vaddr, size)) {
 		return LibKernel::Memory::TryReadBacking(vaddr, data, size);
 	}
-	static const bool speculate = std::getenv("KYTY_SRT_SPECULATE") != nullptr; // ABTEST
-	const auto words_count = size / sizeof(uint32_t);
-	bool       stable      = speculate && size % sizeof(uint32_t) == 0 && vaddr % 4 == 0;
-	for (uint64_t i = 0; stable && i < words_count; i++) {
-		stable = StableWord(vaddr + i * sizeof(uint32_t));
-	}
-	if (stable) {
-		if (!LibKernel::Memory::TryReadBacking(vaddr, data, size)) {
-			return false;
-		}
-		const auto* words = static_cast<const uint32_t*>(data);
-		for (uint64_t i = 0; i < size / sizeof(uint32_t); i++) {
-			m_speculations.insert_or_assign(vaddr + i * sizeof(uint32_t), words[i]);
-		}
-		ProbeSpeculation(true); // FPSPROBE
-		return true;
-	}
-	std::vector<uint8_t> before(size);
-	const bool           known = LibKernel::Memory::TryReadBacking(vaddr, before.data(), size);
 	ReadMemory(vaddr, size);
-	if (!LibKernel::Memory::TryReadBacking(vaddr, data, size)) {
-		return false;
-	}
-	if (known && vaddr % 4 == 0) {
-		const auto* after = static_cast<const uint8_t*>(data);
-		for (uint64_t i = 0; i < words_count; i++) {
-			LearnWord(vaddr + i * sizeof(uint32_t),
-			          std::memcmp(before.data() + i * 4, after + i * 4, 4) == 0);
-		}
-	}
-	return true;
-}
-
-void BufferCache::LearnWalkerWord(uint64_t vaddr, uint32_t before, uint32_t after) {
-	LearnWord(vaddr, before == after);
-}
-
-bool BufferCache::StableWord(uint64_t address) const {
-	constexpr uint16_t StableReads = 3;
-	constexpr uint16_t MaxMisses   = 2;
-	const auto         it          = m_word_stability.find(address);
-	return it != m_word_stability.end() && it->second.same >= StableReads &&
-	       it->second.misses < MaxMisses;
-}
-
-void BufferCache::LearnWord(uint64_t address, bool same) {
-	auto& word = m_word_stability[address];
-	word.same  = same ? static_cast<uint16_t>(std::min<uint32_t>(word.same + 1u, 0xffffu)) : 0;
-}
-
-void BufferCache::VerifySpeculations() {
-	std::erase_if(m_speculations, [this](const auto& speculation) {
-		const auto [address, value] = speculation;
-		// Guest memory is current once no GPU write or download of the word is outstanding.
-		if (IsRegionGpuModified(address, sizeof(uint32_t)) ||
-		    HasEagerDownloads(address, sizeof(uint32_t))) {
-			return false;
-		}
-		uint32_t current = value;
-		(void)LibKernel::Memory::TryReadBacking(address, &current, sizeof(current));
-		if (current != value) {
-			// The word changed: relearn it, and stop speculating on it after a few misses.
-			auto& word  = m_word_stability[address];
-			word.same   = 0;
-			word.misses = static_cast<uint16_t>(std::min<uint32_t>(word.misses + 1u, 0xffffu));
-			ProbeSpeculation(false); // FPSPROBE
-		}
-		return true;
-	});
+	return LibKernel::Memory::TryReadBacking(vaddr, data, size);
 }
 
 void BufferCache::RecordEagerDownloads() {
-	static const bool disabled = std::getenv("KYTY_NO_EAGER") != nullptr; // ABTEST
-	if (disabled || m_recording_eager || !GuestGpu::IsGpuThread()) {
+	if (m_recording_eager || !GuestGpu::IsGpuThread()) {
 		return;
 	}
 	m_recording_eager = true;
 	// Pages whose downloads have landed become readable without a fault.
 	CompleteEagerDownloads(0, UINT64_MAX, true);
-	VerifySpeculations();
 	if (!m_eager_writes.Empty()) {
 		const auto writes = std::exchange(m_eager_writes, {});
 		writes.ForEach([&](uint64_t begin, uint64_t end) {
@@ -1070,27 +791,12 @@ void BufferCache::RecordEagerDownloads() {
 				if (DownloadBufferMemory<true>(buffer, address, last - address)) {
 					m_eager_downloads.push_back({address, last, m_scheduler.CurrentTick()});
 					m_eager_pending.Add(address, last - address);
-					ProbeEager(last - address); // FPSPROBE
 				}
 				address = last;
 			}
 		});
 	}
 	m_recording_eager = false;
-	if (ProbeEnabled()) { // FPSPROBE
-		static auto last = std::chrono::steady_clock::now();
-		const auto  now  = std::chrono::steady_clock::now();
-		if (std::chrono::duration<double>(now - last).count() >= 5.0) {
-			uint64_t hot = 0;
-			m_readback_pages.ForEach([&](uint64_t begin, uint64_t end) { hot += end - begin; });
-			std::printf("[eager] pending=%zu hot_bytes=%llu downloads=%llu bytes=%llu\n",
-			            m_eager_downloads.size(), static_cast<unsigned long long>(hot),
-			            static_cast<unsigned long long>(ProbeEager(0, true)),
-			            static_cast<unsigned long long>(ProbeEager(0, false, true)));
-			std::fflush(stdout);
-			last = now;
-		}
-	}
 }
 
 void BufferCache::CompleteEagerDownloads(uint64_t vaddr, uint64_t size, bool finished_only) {
@@ -1230,13 +936,7 @@ void BufferCache::QueueBdaSync(uint64_t vaddr, uint64_t size, bool is_write) {
 				      m_memory_tracker.IsRegionGpuModified(page, CACHING_PAGESIZE))) {
 					m_gpu_owned.Subtract(page, CACHING_PAGESIZE);
 				}
-				// TEST (temporary): KYTY_CPU_WRITE_HOST=1 sends CPU-written pages to guest memory.
-				static const bool live = std::getenv("KYTY_CPU_WRITE_HOST") != nullptr;
-				if (live && !m_gpu_owned.Contains(page, CACHING_PAGESIZE)) {
-					m_bda_entry_pending.Add(page, CACHING_PAGESIZE);
-				} else {
-					m_bda_sync.Add(page, CACHING_PAGESIZE);
-				}
+				m_bda_sync.Add(page, CACHING_PAGESIZE);
 			}
 		}
 		m_bda_sync_pending.store(true, std::memory_order_release);
@@ -1512,21 +1212,7 @@ vk::DeviceAddress BufferCache::HostAddress(uint64_t vaddr) {
 	return chunk.address == 0 ? 0 : chunk.address + (offset & ((uint64_t {1} << HostChunkBits) - 1u));
 }
 
-static uint64_t g_probe_device_entries = 0; // PROBE
-static uint64_t g_probe_host_entries   = 0; // PROBE
-
 void BufferCache::WriteBdaEntries(uint64_t begin, uint64_t end) {
-	{ // PROBE: entries written per 5 s by target.
-		static auto last = std::chrono::steady_clock::now();
-		if (std::chrono::duration<double>(std::chrono::steady_clock::now() - last).count() >= 5.0) {
-			std::printf("[hostview] entries written: device=%llu host=%llu\n",
-			            static_cast<unsigned long long>(g_probe_device_entries),
-			            static_cast<unsigned long long>(g_probe_host_entries));
-			std::fflush(stdout);
-			g_probe_device_entries = g_probe_host_entries = 0;
-			last = std::chrono::steady_clock::now();
-		}
-	}
 	begin = Common::AlignDown(begin, CACHING_PAGESIZE);
 	end   = Common::AlignUp(end, CACHING_PAGESIZE);
 	if (begin >= end) return;
@@ -1547,12 +1233,8 @@ void BufferCache::WriteBdaEntries(uint64_t begin, uint64_t end) {
 		               !m_memory_tracker.IsRegionCpuModified(address, CACHING_PAGESIZE))) {
 			const auto& buffer = m_slot_buffers[*owner];
 			entry = buffer.BufferDeviceAddress() + buffer.Offset(address) + BDA_ACCESSED;
-			++g_probe_device_entries; // PROBE
 		} else if (const auto host = HostAddress(address); host != 0) {
-			// TEST (temporary): KYTY_HOST_TAG=1 tags guest-memory entries (no migration faults).
-			static const bool tag = std::getenv("KYTY_HOST_TAG") != nullptr;
-			entry = host + (tag ? BDA_ACCESSED : 0);
-			++g_probe_host_entries; // PROBE
+			entry = host;
 		} else if (cached) {
 			// Private memory outside the backing keeps the fault-driven cache buffer path.
 			const auto& buffer = m_slot_buffers[*owner];
@@ -1590,7 +1272,6 @@ void BufferCache::FlushBdaEntries() {
 		data.push_back(m_pt_queue[i].second);
 	}
 	m_pt_queue.clear();
-	FpsProbe::CountEvent(FpsProbe::PageTableWrites); // PROBE
 	const auto offset = m_staging_buffer.Copy(data.data(), data.size() * sizeof(vk::DeviceAddress), 8);
 	for (auto& region: regions) region.srcOffset += offset;
 	m_scheduler.EndRendering();
@@ -1619,26 +1300,4 @@ void BufferCache::FlushBdaEntries() {
 	dependency.pBufferMemoryBarriers = &after;
 	command.pipelineBarrier2(dependency);
 }
-
-void BufferCache::DescribePage(uint64_t vaddr) noexcept { // PROBE
-	const auto page = Common::AlignDown(vaddr, CACHING_PAGESIZE);
-	if (!GuestRange {page, CACHING_PAGESIZE}.Valid()) {
-		std::printf("[page] 0x%llx invalid\n", static_cast<unsigned long long>(vaddr));
-		return;
-	}
-	const auto* owner = m_page_table.Find(page >> PageTable::kPageBits);
-	bool owned = false;
-	{
-		std::lock_guard lock(m_bda_sync_mutex);
-		owned = m_gpu_owned.Contains(page, CACHING_PAGESIZE);
-	}
-	uint64_t offset = 0;
-	const bool backed = LibKernel::Memory::GuestBackingOffset(page, &offset);
-	std::printf("[page] 0x%llx cached=%d owned=%d gpu_mod=%d cpu_mod=%d gpu_ranges=%d backed=%d\n",
-	            static_cast<unsigned long long>(vaddr), owner != nullptr && *owner ? 1 : 0, owned ? 1 : 0,
-	            m_memory_tracker.IsRegionGpuModified(page, CACHING_PAGESIZE) ? 1 : 0,
-	            m_memory_tracker.IsRegionCpuModified(page, CACHING_PAGESIZE) ? 1 : 0,
-	            m_gpu_modified_ranges.Intersects(page, CACHING_PAGESIZE) ? 1 : 0, backed ? 1 : 0);
-}
-
 } // namespace Libs::Graphics

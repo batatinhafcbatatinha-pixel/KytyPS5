@@ -1,5 +1,4 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
-#include "common/fpsProbe.h" // FPSPROBE
 
 #include "common/assert.h"
 #include "graphics/guest_gpu/graphicsRun.h"
@@ -56,7 +55,6 @@ VideoOut::VideoOutDriver& RenderContext::GetVideoOut() const {
 }
 
 bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noexcept {
-	FpsProbe::Scope fps_scope(GuestGpu::IsGpuThread() ? FpsProbe::FaultGpu : FpsProbe::FaultOther); // FPSPROBE
 	// The host reports the faulting byte, not the instruction's access width. Both caches
 	// resolve its page; guessing a width can cross the end of a valid guest mapping.
 	constexpr uint64_t fault_size = 1;

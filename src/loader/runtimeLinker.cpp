@@ -16,7 +16,6 @@
 #include "common/virtualMemory.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
-#include "graphics/guest_gpu/graphicsRun.h" // FPSPROBE
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
@@ -29,8 +28,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono> // FPSPROBE
-#include <map> // FPSPROBE
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -651,47 +648,6 @@ static bool IsReadableRange(uint64_t addr, uint64_t size) {
 	return true;
 }
 
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-// FPSPROBE: where GPU-thread read faults come from (env KYTY_PERF_LOG), as module offsets.
-static void ProbeGpuThreadReadFault(uint64_t rip) {
-	static const bool enabled = std::getenv("KYTY_PERF_LOG") != nullptr;
-	if (!enabled || !Libs::Graphics::GuestGpu::IsGpuThread()) {
-		return;
-	}
-	static std::map<std::vector<uint64_t>, uint64_t> stacks;
-	static auto                                      last = std::chrono::steady_clock::now();
-	static const auto base = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
-	void*             frames[10] {};
-	const auto        count = RtlCaptureStackBackTrace(0, 10, frames, nullptr);
-	std::vector<uint64_t> key {rip - base};
-	for (USHORT i = 0; i < count; i++) {
-		key.push_back(reinterpret_cast<uint64_t>(frames[i]) - base);
-	}
-	stacks[key]++;
-	const auto now = std::chrono::steady_clock::now();
-	if (std::chrono::duration<double>(now - last).count() < 5.0) {
-		return;
-	}
-	std::vector<std::pair<uint64_t, const std::vector<uint64_t>*>> top;
-	for (const auto& [stack, hits]: stacks) {
-		top.emplace_back(hits, &stack);
-	}
-	std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-	for (size_t i = 0; i < std::min<size_t>(top.size(), 6); i++) {
-		std::printf("[gpufault] count=%llu rva", static_cast<unsigned long long>(top[i].first));
-		for (const auto rva: *top[i].second) {
-			std::printf(" 0x%llx", static_cast<unsigned long long>(rva));
-		}
-		std::printf("\n");
-	}
-	std::fflush(stdout);
-	stacks.clear();
-	last = now;
-}
-#else
-static void ProbeGpuThreadReadFault(uint64_t) {}
-#endif
-
 static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exception_info) {
 	const auto* info = &exception_info;
 
@@ -712,7 +668,6 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			case CoreAccess::Unknown: return false;
 		}
 		if (access == GpuAccess::Read) {
-			ProbeGpuThreadReadFault(info->exception_address); // FPSPROBE
 			const auto length =
 			    Libs::Graphics::ShaderRecompiler::IR::SrtWalkerLoadLength(info->exception_address);
 			// Hybrid GPU-SRT: the draw runs the shader-side descriptor path instead of waiting.
@@ -723,7 +678,7 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			}
 			uint32_t value = 0;
 			// The walker loads a DWORD from R10.
-			if (length != 0 && Libs::LibKernel::Memory::TrySpeculativeWalkerLoad(info->r10, &value)) {
+			if (length != 0 && Libs::LibKernel::Memory::TryCurrentWalkerLoad(info->r10, &value)) {
 				Loader::X64InstructionEmulator::SkipLoad(info->native_context, length, value);
 				return true;
 			}
@@ -764,16 +719,6 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			}
 			std::printf("\n");
 		}
-		// PROBE (temporary): data behind the registers that address guest memory, and its pages.
-		for (const auto base: {info->rax, info->rdi, info->rbx}) {
-			if (!IsReadableRange(base, 64)) continue;
-			const auto* words = reinterpret_cast<const uint64_t*>(base);
-			std::printf("mem %016llx:", static_cast<unsigned long long>(base));
-			for (int i = 0; i < 8; i++) std::printf(" %016llx", static_cast<unsigned long long>(words[i]));
-			std::printf("\n");
-			Libs::LibKernel::Memory::DescribeGpuPage(base);
-		}
-		Libs::LibKernel::Memory::DescribeGpuPage(info->access_violation_vaddr);
 		if (IsReadableRange(info->rsp, 32 * sizeof(uint64_t))) {
 			const auto* stack = reinterpret_cast<const uint64_t*>(info->rsp);
 			std::printf("stack:");
