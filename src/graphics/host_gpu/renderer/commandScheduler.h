@@ -56,6 +56,8 @@ public:
 	// main submission waits for it, so everything recorded after it (and every resource retired
 	// with the current tick) stays ordered after it.
 	[[nodiscard]] bool     SideAvailable() const noexcept { return m_graphics.side_queue != nullptr; }
+	// Side queue present and KYTY_EARLY_COMPUTE is not 0.
+	[[nodiscard]] bool     EarlyComputeEnabled() const noexcept;
 	[[nodiscard]] bool     InSide() const noexcept { return m_in_side; }
 	// The side value the current side recording signals.
 	[[nodiscard]] uint64_t SideValue() const noexcept { return m_side.CurrentTick(); }

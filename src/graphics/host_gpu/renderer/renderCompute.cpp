@@ -373,10 +373,8 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 	// recorded from here on (uploads, bindings, the dispatch, its read-back copies) goes to the side.
 	std::vector<BufferCache::EarlyRange> early_ranges;
 	bool                                 early = false;
-	static const char* early_setting = std::getenv("KYTY_EARLY_COMPUTE"); // 0 turns it off.
 	if (auto& scheduler = m_context.GetCommandScheduler();
-	    !(early_setting != nullptr && early_setting[0] == '0') && scheduler.SideAvailable() &&
-	    m_context.GetBufferCache().IsEarlyProducer(program.shader_hash)) {
+	    scheduler.EarlyComputeEnabled() && m_context.GetBufferCache().IsEarlyProducer(program.shader_hash)) {
 		using Kind         = ShaderRecompiler::IR::DescriptorBindingKind;
 		const auto& counts = program.bindings.descriptor_counts;
 		// Device buffers shared by every dispatch (GDS, BDA tables) would be used by the queued work

@@ -162,8 +162,17 @@ void BeginSlot(Learning& l, std::chrono::steady_clock::time_point now) {
 
 } // namespace
 
+static std::atomic<bool> g_runtime_learning {true};
+
+void SetRuntimeLearning(bool enabled) {
+	g_runtime_learning.store(enabled, std::memory_order_relaxed);
+}
+
 void NoteDescriptorWait(uint64_t program, double ms) {
-	if (!GpuSrtAuto() || program == 0 || ms <= 0.05) return;
+	if (!GpuSrtAuto() || !g_runtime_learning.load(std::memory_order_relaxed) || program == 0 ||
+	    ms <= 0.05) {
+		return;
+	}
 	auto& l = GetLearning();
 	if (l.phase != Learning::Phase::Idle) return;
 	const auto now = std::chrono::steady_clock::now();

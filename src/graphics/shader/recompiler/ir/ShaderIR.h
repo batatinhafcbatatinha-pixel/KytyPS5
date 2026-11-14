@@ -52,6 +52,8 @@ inline constexpr uint32_t GpuSrtAutoParts    = 1u | 2u | 8u | 16u;
 [[nodiscard]] bool IsRuntimeProgram(uint64_t hash);
 // GPU thread: the descriptor walk of program waited ms for bytes the GPU wrote.
 void NoteDescriptorWait(uint64_t program, double ms);
+// Whether NoteDescriptorWait learns at all (the renderer turns it off while early compute runs).
+void SetRuntimeLearning(bool enabled);
 // GPU thread, once per draw or dispatch: advances a running trial of a learned program.
 void LearningTick();
 // The program whose SRT the CPU is walking on this thread (0 outside walks).
