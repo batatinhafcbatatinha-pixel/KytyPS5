@@ -79,8 +79,15 @@ void SetGpuSrtProgram(uint64_t hash, bool runtime_variant) {
 	t_runtime_variant = runtime_variant;
 }
 
+static std::atomic<bool> g_runtime_learning {true};
+
 bool GpuSrtLearning() {
 	return GpuSrtAuto();
+}
+
+bool GpuSrtHostViewWanted() {
+	// Learning mode without learning (early compute) has nothing that reads through the view.
+	return GpuSrtMask() != 0u && (!GpuSrtAuto() || g_runtime_learning.load(std::memory_order_relaxed));
 }
 
 uint32_t GpuSrtStoreTag() {
@@ -162,7 +169,6 @@ void BeginSlot(Learning& l, std::chrono::steady_clock::time_point now) {
 
 } // namespace
 
-static std::atomic<bool> g_runtime_learning {true};
 
 void SetRuntimeLearning(bool enabled) {
 	g_runtime_learning.store(enabled, std::memory_order_relaxed);

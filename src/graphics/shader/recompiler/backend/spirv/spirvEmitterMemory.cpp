@@ -1359,7 +1359,7 @@ void DefineIndirectBufferFormats(ValueEmitContext& ctx) {
 }
 
 // Host view (GPU-SRT): marks the page of a BDA store in the fault buffer, atomically, so the host
-// learns which guest pages a shader wrote (BufferCache::MarkDmaAccess).
+// learns which guest pages a shader wrote (the fault manager gives them a cache buffer).
 void RecordBdaWrite(EmitterState& state, uint32_t address) {
 	const auto type     = TypeU64(state);
 	const auto extended = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), address,
@@ -1595,31 +1595,24 @@ void DefineGetBdaPointer(EmitterState& state) {
 	                          page);
 	const auto entry = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpLoad, type, entry, entry_pointer);
-	const auto tag    = Binary(state, spv::OpBitwiseAnd, type, entry,
-	                           ConstantU64(state, BufferCache::BDA_ACCESSED));
-	const auto offset = Binary(state, spv::OpBitwiseAnd, type, address,
-	                           ConstantU64(state, BufferCache::CACHING_PAGESIZE - 1));
-	const auto pointer = Select(
-	    state, type, valid,
-	    Binary(state, spv::OpISub, type, Binary(state, spv::OpIAdd, type, entry, offset), tag),
-	    ConstantU64(state, 0));
-	const auto unaccessed = Binary(state, spv::OpLogicalAnd, TypeBool(state), valid,
-	    Binary(state, spv::OpIEqual, TypeBool(state), tag, ConstantU64(state, 0)));
+	// A guest page without a cache buffer has no entry: its page reaches the fault buffer.
+	const auto unbacked = Binary(state, spv::OpLogicalAnd, TypeBool(state), valid,
+	    Binary(state, spv::OpIEqual, TypeBool(state), entry, ConstantU64(state, 0)));
 	const auto fault_label = state.builder.AllocateId();
 	const auto merge_label = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpSelectionMerge, merge_label, spv::SelectionControlMaskNone);
-	state.builder.AddFunction(spv::OpBranchConditional, unaccessed, fault_label, merge_label);
+	state.builder.AddFunction(spv::OpBranchConditional, unbacked, fault_label, merge_label);
 
-	// Unbacked pages have zero entries and return a null pointer.
 	EmitLabel(state, fault_label);
 	RecordBdaFault(state, page);
-	const auto unbacked =
-	    Binary(state, spv::OpIEqual, TypeBool(state), entry, ConstantU64(state, 0));
-	state.builder.AddFunction(spv::OpReturnValue,
-	                          Select(state, type, unbacked, ConstantU64(state, 0), pointer));
+	state.builder.AddFunction(spv::OpReturnValue, ConstantU64(state, 0));
 
 	EmitLabel(state, merge_label);
-	state.builder.AddFunction(spv::OpReturnValue, pointer);
+	const auto offset = Binary(state, spv::OpBitwiseAnd, type, address,
+	                           ConstantU64(state, BufferCache::CACHING_PAGESIZE - 1));
+	state.builder.AddFunction(spv::OpReturnValue,
+	                          Select(state, type, valid, Binary(state, spv::OpIAdd, type, entry, offset),
+	                                 ConstantU64(state, 0)));
 	state.builder.AddFunction(spv::OpFunctionEnd);
 }
 
