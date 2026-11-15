@@ -137,7 +137,6 @@ namespace Pssr {
 struct Request;
 }
 
-void BackUserDataBases(RenderContext& context, const ShaderStageRuntime& stage);
 
 class RenderExecutor {
 public:

@@ -251,6 +251,7 @@ struct ImageResource {
 	bool                          atomic            = false;
 	bool                          atomic64          = false;
 	bool                          unfiltered_access_only = true;
+	bool                          sample_access_only     = true; // Every use is a sample.
 	bool                          depth_compare     = false;
 	bool                          skip_degamma      = false; // A sampler reads sRGB as stored.
 	bool                          cube              = false;
@@ -631,7 +632,7 @@ struct ShaderInfo {
 	std::vector<SamplerResource>     samplers;
 	std::vector<SampledResourcePair> sampled_pairs;
 	std::vector<std::array<uint32_t, 2>> address_bases; // Flattened SRT slots of global bases.
-	std::vector<std::array<uint32_t, 2>> user_data_bases; // User-data registers of global bases.
+	std::vector<std::array<uint32_t, 2>> user_address_bases; // User data dwords of global bases.
 	std::array<uint32_t, 2>          ray_query_tlas {}; // Flattened SRT slots of the TLAS header.
 	std::vector<StageInput>          inputs;
 	std::vector<StageOutput>         outputs;
