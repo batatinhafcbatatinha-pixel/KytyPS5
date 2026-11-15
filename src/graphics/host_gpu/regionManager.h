@@ -121,6 +121,15 @@ public:
 		return true;
 	}
 
+	// True when a page of the range is kept unwatched (see ChangeState): its writes raise no fault.
+	[[nodiscard]] bool IsHot(uint64_t offset, uint64_t size) const {
+		if (!m_has_hot) {
+			return false;
+		}
+		const auto [start, end] = GetPageRange(offset, size);
+		return m_hot.Any(start, end);
+	}
+
 	template <DirtySource source, bool enable>
 	void ChangeState(uint64_t offset, uint64_t size) {
 		const auto [start, end] = GetPageRange(offset, size);

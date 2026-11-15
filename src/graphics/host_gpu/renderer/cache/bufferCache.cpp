@@ -1056,7 +1056,14 @@ void BufferCache::ProcessFaultBuffer() {
 void BufferCache::QueueBdaSync(uint64_t vaddr, uint64_t size, bool is_write) {
 	const auto begin = Common::AlignDown(vaddr, TRACKER_PAGE_SIZE);
 	const auto end   = Common::AlignUp(vaddr + size, TRACKER_PAGE_SIZE);
+	// This write may be the last one a fault reports for these pages.
+	const bool unwatched = is_write && StickyPagesEnabled() && GuestRange {begin, end - begin}.Valid() &&
+	                       m_memory_tracker.IsRegionUnwatched(begin, end - begin);
 	std::lock_guard lock(m_bda_sync_mutex);
+	if (unwatched) {
+		m_bda_unwatched.Add(begin, end - begin);
+		m_bda_unwatched_any.store(true, std::memory_order_release);
+	}
 	if (m_host_view) {
 		// Guest memory holds the newest bytes after a CPU write; a new mapping gets entries.
 		const auto page_begin = Common::AlignDown(begin, CACHING_PAGESIZE);
@@ -1081,6 +1088,31 @@ void BufferCache::QueueBdaSync(uint64_t vaddr, uint64_t size, bool is_write) {
 }
 
 void BufferCache::SynchronizeBda(const RangeSet& mapped) {
+	// Shader address reads take CPU bytes only through this queue, which write faults fill. Pages
+	// left unwatched raise none, so they are queued once per guest submission, as their buffer
+	// uploads are, for as long as they stay unwatched.
+	if (m_bda_unwatched_any.load(std::memory_order_acquire) && m_bda_unwatched_epoch != TrackerEpoch()) {
+		m_bda_unwatched_epoch = TrackerEpoch();
+		const auto pages = [this] {
+			std::lock_guard lock(m_bda_sync_mutex);
+			return m_bda_unwatched;
+		}();
+		RangeSet watched;
+		pages.ForEach([&](uint64_t begin, uint64_t end) {
+			for (auto page = begin; page < end; page += TRACKER_PAGE_SIZE) {
+				if (!m_memory_tracker.IsRegionUnwatched(page, TRACKER_PAGE_SIZE)) {
+					watched.Add(page, TRACKER_PAGE_SIZE);
+				}
+			}
+		});
+		std::lock_guard lock(m_bda_sync_mutex);
+		watched.ForEach([&](uint64_t begin, uint64_t end) { m_bda_unwatched.Subtract(begin, end - begin); });
+		m_bda_unwatched.ForEach([&](uint64_t begin, uint64_t end) { m_bda_sync.Add(begin, end - begin); });
+		m_bda_unwatched_any.store(!m_bda_unwatched.Empty(), std::memory_order_release);
+		if (!m_bda_unwatched.Empty()) {
+			m_bda_sync_pending.store(true, std::memory_order_release);
+		}
+	}
 	if (!m_bda_sync_pending.exchange(false, std::memory_order_acq_rel)) {
 		return;
 	}
