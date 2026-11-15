@@ -23,6 +23,8 @@ and each part has a switch.
 | GPU-side descriptor reads for learned programs | Programs that keep the GPU thread waiting on GPU-written descriptors are learned and read those descriptors on the GPU. Trials of new candidates are off while early compute is active, because a trial compiles a shader variant and can stall the game. | `KYTY_GPU_SRT=0` turns it off, `KYTY_GPU_SRT_LEARN=1` turns the trials back on |
 | Walker page faults avoided | The descriptor walker reads pages that faulted recently through a checked load from the unprotected backing memory, without raising an exception. | none |
 | Texture descriptions reused | The size, tiling layout and view information of a texture binding are kept per descriptor instead of being recomputed for every binding. | none |
+| Rewritten pages left unwatched | A buffer page that the game writes again after its upload is no longer write-protected. It is uploaded once per guest command submission instead, which saves a page fault and two protection changes per write. A GPU write ends this for the page, and the set expires after 4096 submissions. | none |
+| Submit worker | The GPU thread's `vkQueueSubmit` calls run on a worker thread in submission order. A wait on a queued batch submits it on the waiting thread. | `KYTY_ASYNC_SUBMIT=0` submits on the GPU thread |
 | Read-back fixes | GPU-written image data is kept across eviction and raw reads; read-back downloads start when their batch is submitted. | none |
 | Device-loss report | Every failed Vulkan wait or submit prints one `[device-loss]` line with free RAM, commit charge and video memory usage and budget. | none |
 
@@ -32,6 +34,9 @@ with the game's render resolution patched to 1280x720, on an RTX 3050 laptop GPU
 changes of that day. The last batch (walker and texture descriptions) lowers the frame time by
 1.7 ms (21.91 to 20.21 ms) in an in-run comparison of alternating 5 s windows. Separate runs differ
 by about 1.5 fps on this machine, and other scenes, resolutions and games were not measured.
+The next batch (unwatched rewritten pages and the submit worker) lowers the frame time by 0.34 ms
+in the same kind of in-run comparison; its clean run showed 50.3 fps. Most of its effect is CPU
+time on the game threads (about 140 ms of page-fault handling per second less), not frame rate.
 
 Known open point: 3 of 20 runs with the second queue lost the GPU device, all within one hour in
 which the machine was short of memory and disk; none since. If it happens, the `[device-loss]`
