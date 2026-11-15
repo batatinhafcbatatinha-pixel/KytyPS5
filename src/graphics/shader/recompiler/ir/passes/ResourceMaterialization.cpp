@@ -1363,16 +1363,21 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 		if (BufferAccessOf(store->GetOpcode()) != BufferAccess::Write ||
 		    skipped != store->Arg(5).Resolve() || !visited.contains(target)) return {};
 	}
+	// One buffer may be read per lane: the source of a copy, matched against the store below.
+	uint32_t lane_reads = 0;
 	for (const auto& buffer: program.info.buffers) {
-		if (buffer.read && (!buffer.scalar || buffer.written)) return {};
+		if (buffer.read && buffer.written) return {};
+		if (buffer.read && !buffer.scalar) lane_reads++;
 	}
+	if (lane_reads > 1) return {};
 	const auto& memory = program.memory_info.at(store->Flags<MemoryFlags>().index);
 	UniformFillPlan result;
 	result.fill.resource = memory.resource;
 	Value data;
 	Value guard(true);
+	std::optional<std::array<uint64_t, 3>> address;
 	if (store->GetOpcode() == ValueOpcode::ImageWrite) {
-		if (program.info.images.size() != 1 || memory.dmask != 1 || memory.data_bits != 32 ||
+		if (lane_reads != 0 || program.info.images.size() != 1 || memory.dmask != 1 || memory.data_bits != 32 ||
 		    memory.image_has_mip || memory.image_sample_flags != 0 || memory.image_r128 ||
 		    memory.image_dimension != Decoder::ImageDimension::Dim2DArray ||
 		    store->Arg(3).Resolve() != Value(true)) return {};
@@ -1415,7 +1420,7 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 		    memory.offen || memory.offset != 0 || memory.data_bits != 32 ||
 		    memory.data_dwords != static_cast<uint32_t>(store_op - stores.begin() + 1))
 			return {};
-		const auto address = FillIndex(store->Arg(1), 0, guard);
+		address = FillIndex(store->Arg(1), 0, guard);
 		if (!address || (*address)[0] != 0 || (*address)[1] != 1 || (*address)[2] == 0) return {};
 		result.fill.kind = UniformFillKind::Buffer;
 		result.fill.group_stride[0] = static_cast<uint32_t>((*address)[2]);
@@ -1424,6 +1429,25 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 	}
 	data = ResolveActiveU32(data, guard);
 	const auto*          vector = data.TryInstruction();
+	if (lane_reads != 0) {
+		// destination[i] = source[i]: the stored word is the one per-lane read, an unformatted
+		// dword load from another buffer at the store's own element index.
+		if (result.fill.words != 1 || memory.formatted || vector == nullptr ||
+		    vector->GetOpcode() != ValueOpcode::LoadBufferU32 ||
+		    vector->Arg(2).Resolve() != Value(0u) || vector->Arg(3).Resolve() != Value(0u))
+			return {};
+		const auto& from  = program.memory_info.at(vector->Flags<MemoryFlags>().index);
+		const auto  index = FillIndex(vector->Arg(1), 0, guard);
+		if (from.resource == memory.resource || from.resource >= program.info.buffers.size() ||
+		    from.formatted || from.typed || !from.idxen || from.offen || from.offset != 0 ||
+		    from.data_bits != 32 || from.data_dwords != 1 || !index || *index != *address)
+			return {};
+		const auto& source = program.info.buffers[from.resource];
+		if (!source.read || source.scalar || source.written || source.formatted) return {};
+		result.fill.kind   = UniformFillKind::Copy;
+		result.fill.source = from.resource;
+		return result;
+	}
 	constexpr std::array composites {ValueOpcode::CompositeConstructU32x2,
 	                                 ValueOpcode::CompositeConstructU32x3,
 	                                 ValueOpcode::CompositeConstructU32x4};
@@ -1763,11 +1787,13 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	uint32_t elements = 0;
 	if (uniform_fill && !fill.element_count.IsEmpty())
 		uniform_fill = WalkedValue(program, fill.element_count, elements) && elements != 0;
-	for (uint32_t i = 0; i < words && uniform_fill; ++i) {
+	// A copy stores no value of its own: only its element count is evaluated.
+	const bool copy = fill.fill.kind == UniformFillKind::Copy;
+	for (uint32_t i = 0; i < words && uniform_fill && !copy; ++i) {
 		uniform_fill = WalkedValue(program, fill.values[i], stored[i]) && stored[i] == stored[0];
 	}
 	// A one-word fill may list further words its selects choose from: they must all agree.
-	for (uint32_t i = words; i < fill.values.size() && uniform_fill && fill.pattern_size.IsEmpty(); ++i) {
+	for (uint32_t i = words; i < fill.values.size() && uniform_fill && !copy && fill.pattern_size.IsEmpty(); ++i) {
 		uint32_t other = 0;
 		if (!fill.values[i].IsEmpty()) {
 			uniform_fill = WalkedValue(program, fill.values[i], other) && other == stored[0];
