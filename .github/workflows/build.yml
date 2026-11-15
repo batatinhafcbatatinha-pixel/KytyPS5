@@ -442,8 +442,9 @@ jobs:
     name: Release KytyPS5
     if: >-
       always() &&
-      github.event_name == 'push' &&
-      github.repository == 'KytyPS5/KytyPS5' &&
+      ((github.event_name == 'push' && github.repository == 'KytyPS5/KytyPS5') ||
+       (github.repository == 'batatinhafcbatatinha-pixel/KytyPS5' && github.ref == 'refs/heads/main' &&
+        (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) &&
       (needs.windows.result == 'success' ||
        needs.macos.result == 'success' ||
        needs.linux.result == 'success')
@@ -505,8 +506,16 @@ jobs:
             "$linux_dir/kyty_launcher" \
             "$linux_dir/kyty_emulator" \
             "$linux_dir/kyty_updater"
-          tar -C "$linux_dir" -czf \
-            "$GITHUB_WORKSPACE/$RELEASE_NAME-Linux-x86_64.tar.gz" .
+          if [[ "$GITHUB_REPOSITORY" == KytyPS5/KytyPS5 ]]; then
+            tar -C "$linux_dir" -czf \
+              "$GITHUB_WORKSPACE/$RELEASE_NAME-Linux-x86_64.tar.gz" .
+          else
+            # Fork builds: one ZIP per platform (zip keeps the executable bits; fork builds have no in-app updater).
+            (
+              cd "$linux_dir"
+              zip -qry "$GITHUB_WORKSPACE/$RELEASE_NAME-Linux-x86_64.zip" .
+            )
+          fi
 
       - name: Create release
         shell: bash
@@ -517,7 +526,8 @@ jobs:
           for artifact in \
             "$RELEASE_NAME-Windows-x64.zip" \
             "$RELEASE_NAME-macOS-x86_64.zip" \
-            "$RELEASE_NAME-Linux-x86_64.tar.gz"; do
+            "$RELEASE_NAME-Linux-x86_64.tar.gz" \
+            "$RELEASE_NAME-Linux-x86_64.zip"; do
             if [[ -f "$artifact" ]]; then
               assets+=("$artifact")
             fi
@@ -527,6 +537,13 @@ jobs:
             gh release upload "$RELEASE_NAME" "${assets[@]}" \
               --clobber \
               --repo "$GITHUB_REPOSITORY"
+          elif [[ "$GITHUB_REPOSITORY" != KytyPS5/KytyPS5 ]]; then
+            gh release create "$RELEASE_NAME" "${assets[@]}" \
+              --notes "Fork build of KytyPS5 by $GITHUB_REPOSITORY (not an official KytyPS5 release), built by GitHub Actions from commit $GITHUB_SHA. One ZIP per platform: Windows x64, Linux x86_64, macOS x86_64. The emulator only: no games, no firmware, no keys." \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_NAME (fork build)" \
+              --latest
           else
             gh release create "$RELEASE_NAME" "${assets[@]}" \
               --generate-notes \
