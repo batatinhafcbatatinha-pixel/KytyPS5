@@ -13,14 +13,14 @@ here unchanged. This page only says what this fork changes.
 
 ## What differs from upstream
 
-The fork follows upstream `main` (merged regularly; last merge at upstream `3e226bff`) and adds
+The fork follows upstream `main` (merged regularly; last merge at upstream `3acafb35`) and adds
 work on frame rate, measured on *Control Ultimate Edition* (PPSA01949). All of it is on by default
 and each part has a switch.
 
 | Change | What it does | Switch |
 | --- | --- | --- |
 | Early compute on a second queue | A compute program whose output later shaders read back is learned at run time and its dispatches run on a second Vulkan queue, ahead of the work already queued, when a per-dispatch check finds no pending write to its inputs and no queued read of its outputs. This removes most of the GPU thread's read-back waits. | `KYTY_EARLY_COMPUTE=0` turns it off |
-| GPU-side descriptor reads for learned programs | Programs that keep the GPU thread waiting on GPU-written descriptors are learned and read those descriptors on the GPU. Trials of new candidates are off while early compute is active, because a trial compiles a shader variant and can stall the game. | `KYTY_GPU_SRT=0` turns it off, `KYTY_GPU_SRT_LEARN=1` turns the trials back on |
+| GPU-side descriptor reads for learned programs | Disabled since the merge of upstream `3acafb35`: upstream reworked the image heap these variants looked their textures up in, and the fork's lookup table was not carried over (its measured ceiling in *Control* was below 1 ms per frame). The shader-side code is still in the tree. | none |
 | Walker page faults avoided | The descriptor walker reads pages that faulted recently through a checked load from the unprotected backing memory, without raising an exception. | none |
 | Texture descriptions reused | The size, tiling layout and view information of a texture binding are kept per descriptor instead of being recomputed for every binding. | none |
 | Rewritten pages left unwatched | A buffer page that the game writes again after its upload is no longer write-protected. It is uploaded once per guest command submission instead, which saves a page fault and two protection changes per write. A GPU write ends this for the page, and the set expires after 4096 submissions. | none |
@@ -48,10 +48,8 @@ The render-resolution patches used for these measurements are in
 [recomp-patches](https://github.com/batatinhafcbatatinha-pixel/recomp-patches) (`ps5/PPSA01949/`)
 and are loaded with upstream's `--game-patch` option.
 
-Parked code: an earlier attempt to move every descriptor read to the GPU is still in the tree,
-off by default and not maintained since the last upstream merge. `KYTY_GPU_SRT_LEARN=1` starts
-its host view and currently loses the GPU device in *Control* within the first two minutes (3 of 3 runs,
-with and without the submit worker); do not use it.
+Parked code: the shader-side part of an earlier attempt to move descriptor reads to the GPU is still in
+the tree and cannot be switched on (`KYTY_GPU_SRT` and `KYTY_GPU_SRT_LEARN` no longer select it).
 
 ## Building and running
 

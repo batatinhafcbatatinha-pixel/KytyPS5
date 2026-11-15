@@ -12,6 +12,7 @@
 #include <mutex>
 #include <vector>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <utility>
@@ -122,25 +123,23 @@ public:
 		return info.IsDepth() ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
 		                      : vk::ImageLayout::eShaderReadOnlyOptimal;
 	}
-	// Resident image heaps sample an image without rediscovering it until one changes its
-	// contents, tracking, identity or layout.
-	void HeapChanged() const noexcept {
+	struct HeapChange {
+		GuestRange data;
+		uint64_t   serial = 0;
+	};
+
+	// Resident image heaps sample an image without rediscovering it until it changes its
+	// contents, tracking, identity or layout, which queues a heap change.
+	void HeapChanged() const {
 		if (heap_refs.load(std::memory_order_relaxed) != 0u) {
-			heap_epoch.fetch_add(1u, std::memory_order_relaxed);
-			// Global views (GPU-SRT) revisit only the elements of changed images.
-			if (heap_changes_enabled.load(std::memory_order_relaxed)) {
-				std::lock_guard lock(heap_changes_mutex);
-				heap_changes.push_back(serial);
-			}
+			std::scoped_lock lock {heap_mutex};
+			heap_changes.push_back({info.data, serial});
 		}
 	}
 
-	static inline std::atomic<bool>     heap_changes_enabled {false};
-	static inline std::mutex            heap_changes_mutex;
-	static inline std::vector<uint64_t> heap_changes; // Image::serial of changed heap images.
-
-	static inline std::atomic<uint64_t> heap_epoch {0};
-	static inline std::atomic<uint64_t> serials {0};
+	static inline std::mutex              heap_mutex; // After TextureCache::m_lock.
+	static inline std::vector<HeapChange> heap_changes;
+	static inline std::atomic<uint64_t>   serials {0};
 
 	// Unique per image, unlike ImageId: freed slots are reused.
 	const uint64_t   serial = serials.fetch_add(1u, std::memory_order_relaxed) + 1u;

@@ -87,11 +87,9 @@ CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graph
     : m_master(graphics), m_side(graphics), m_context(context), m_graphics(graphics),
       m_command_pool(graphics, m_master), m_side_pool(graphics, m_master), m_command(*this),
       m_priority_thread([this](std::stop_token stop) { PriorityOperationsThread(stop); }) {
-	// Early compute removes the read-back waits run-time variants were learned for; their trials
-	// compile and test variants mid-game (a visible stall), so they stay off with it unless
-	// KYTY_GPU_SRT_LEARN=1.
-	const char* learn = std::getenv("KYTY_GPU_SRT_LEARN");
-	ShaderRecompiler::IR::SetRuntimeLearning(!EarlyComputeEnabled() || (learn != nullptr && learn[0] == '1'));
+	// Run-time descriptor variants need the image heap's global map, which the heap no longer has
+	// since upstream made heap elements shared across tables: no program is learned.
+	ShaderRecompiler::IR::SetRuntimeLearning(false);
 	const char* async_submit = std::getenv("KYTY_ASYNC_SUBMIT");
 	m_async_submit           = async_submit == nullptr || async_submit[0] != '0';
 }
@@ -484,8 +482,6 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	}
 	EXIT_IF(m_command.IsInvalid());
 
-	// GPU-SRT: the global map's misses of this batch reach the host with it.
-	m_context.GetImageHeap().RecordGlobalReadback(m_command);
 	m_command.End();
 	const auto buffer   = m_command.m_buffer;
 	auto&      graphics = m_graphics;

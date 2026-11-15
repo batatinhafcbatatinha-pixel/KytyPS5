@@ -660,13 +660,14 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	} else {
 		desc.info.UpdateSize();
 	}
-	const auto alignment = desc.info.DataAlignment();
-	EXIT_NOT_IMPLEMENTED(desc.info.data.size == 0 || alignment == 0 ||
-	                     (address & (static_cast<uint64_t>(alignment) - 1u)) != 0);
-	// Image heaps keep the descriptors of unmapped textures, which PS5 never samples.
+	// Image heaps keep the descriptors of unmapped textures, which PS5 never samples, whatever
+	// their layout.
 	if (resource.heap && !m_context.IsMapped(address, desc.info.data.size)) {
 		return {.layout = vk::ImageLayout::eGeneral};
 	}
+	const auto alignment = desc.info.DataAlignment();
+	EXIT_NOT_IMPLEMENTED(desc.info.data.size == 0 || alignment == 0 ||
+	                     (address & (static_cast<uint64_t>(alignment) - 1u)) != 0);
 	if (storage) {
 		ValidateStorageTexture(resource, descriptor, desc.info.data.size);
 	}
@@ -953,27 +954,6 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 
 // Global loads read pages without a buffer as zero. Back the pages after each base a draw stage
 // loads from scalar data, as compute dispatches do, before the draw reads them.
-// GPU-SRT shaders load through pointers in user data, which no flattened SRT slot holds. Global
-// loads read pages without a buffer as zero, so back the pages after each such base first.
-void BackUserDataBases(RenderContext& context, const ShaderStageRuntime& stage) {
-	constexpr uint64_t Page      = BufferCache::CACHING_PAGESIZE;
-	const auto&        program   = stage.module->info;
-	const auto&        user_data = stage.resources->user_data;
-	for (const auto [low, high]: program.info.user_data_bases) {
-		if (low < program.user_data_base || high < program.user_data_base ||
-		    low - program.user_data_base >= user_data.size() ||
-		    high - program.user_data_base >= user_data.size()) {
-			continue;
-		}
-		const auto base = user_data[low - program.user_data_base] |
-		                  uint64_t {user_data[high - program.user_data_base]} << 32u;
-		for (uint64_t index = 0; index <= 2; ++index) {
-			const auto page = base + index * Page;
-			if (context.IsMapped(page, 1)) (void)context.GetBufferCache().FindBuffer(page, 1);
-		}
-	}
-}
-
 void RenderExecutor::BackDrawAddressBases(const ShaderStageRuntime& stage) {
 	constexpr uint64_t Page = BufferCache::CACHING_PAGESIZE;
 	const auto&        flat = stage.resources->flattened_srt;
@@ -987,7 +967,6 @@ void RenderExecutor::BackDrawAddressBases(const ShaderStageRuntime& stage) {
 			if (m_context.IsMapped(page, 1)) (void)m_context.GetBufferCache().FindBuffer(page, 1);
 		}
 	}
-	BackUserDataBases(m_context, stage);
 }
 
 void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
