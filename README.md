@@ -47,7 +47,9 @@ The render-resolution patches used for these measurements are in
 and are loaded with upstream's `--game-patch` option.
 
 Parked code: an earlier attempt to move every descriptor read to the GPU is still in the tree,
-off by default and not maintained since the last upstream merge.
+off by default and not maintained since the last upstream merge. `KYTY_GPU_SRT_LEARN=1` starts
+its host view and currently loses the GPU device in *Control* within the first two minutes (3 of 3 runs,
+with and without the submit worker); do not use it.
 
 ## Building and running
 
