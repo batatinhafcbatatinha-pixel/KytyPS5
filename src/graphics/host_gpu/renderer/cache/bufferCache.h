@@ -228,6 +228,11 @@ private:
 	MemoryTracker                                     m_memory_tracker;
 	std::mutex                                        m_bda_sync_mutex;
 	RangeSet                                          m_bda_sync;
+	// Unwatched pages: no fault queues their writes, so each guest submission queues them again
+	// (guarded by m_bda_sync_mutex).
+	RangeSet                                          m_bda_unwatched;
+	std::atomic<bool>                                 m_bda_unwatched_any {false};
+	uint64_t                                          m_bda_unwatched_epoch = 0;
 	// Host view: imported 32 MiB chunks of the guest backing by backing offset, the pages a GPU
 	// write owns, and the pages whose BDA entries need rewriting (guarded by m_bda_sync_mutex).
 	struct HostChunk {
