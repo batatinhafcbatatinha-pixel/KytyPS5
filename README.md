@@ -13,7 +13,7 @@ here unchanged. This page only says what this fork changes.
 
 ## What differs from upstream
 
-The fork follows upstream `main` (merged regularly; last merge at upstream `3acafb35`) and adds
+The fork follows upstream `main` (merged regularly; last merge at upstream `41e2147c`) and adds
 work on frame rate, measured on *Control Ultimate Edition* (PPSA01949). All of it is on by default
 and each part has a switch.
 
