@@ -100,10 +100,13 @@ bool ResolveComputeBufferFill(const ShaderComputeInputInfo& input, uint32_t grou
 	constexpr std::array formats {
 	    Prospero::BufferFormat::k32UInt, Prospero::BufferFormat::k32_32UInt,
 	    Prospero::BufferFormat::k32_32_32UInt, Prospero::BufferFormat::k32_32_32_32UInt};
+	// An unformatted store addresses dwords: the descriptor only bounds the range.
+	const bool raw = !input.stage.module->info.info.buffers[fill.resource].formatted;
 	// Offset-or-swizzle bounds do not describe the element range proved by the shader.
-	if (descriptor.Stride() != element_size || descriptor.Format() != formats[fill.words - 1] ||
-	    descriptor.SwizzleEnabled() || descriptor.IndexStride() != 0 || descriptor.AddTid() ||
-	    descriptor.OutOfBounds() == 3 || descriptor.Base48() == 0) {
+	if ((raw ? fill.words != 1 || descriptor.GetSize() % sizeof(uint32_t) != 0
+	         : descriptor.Stride() != element_size || descriptor.Format() != formats[fill.words - 1] ||
+	               descriptor.SwizzleEnabled() || descriptor.IndexStride() != 0) ||
+	    descriptor.AddTid() || descriptor.OutOfBounds() == 3 || descriptor.Base48() == 0) {
 		return false;
 	}
 	if (input.threads_num[0] == 0 || input.threads_num[0] != fill.group_stride[0] ||
@@ -115,7 +118,7 @@ bool ResolveComputeBufferFill(const ShaderComputeInputInfo& input, uint32_t grou
 	                                 ? group_x
 	                                 : static_cast<uint64_t>(group_x) * input.threads_num[0];
 	const auto     size        = descriptor.GetSize();
-	const auto elements = descriptor.NumRecords();
+	const auto elements = raw ? size / sizeof(uint32_t) : uint64_t {descriptor.NumRecords()};
 	const bool covered = fill.bounded_elements != 0
 	                         ? fill.bounded_elements == elements && invocations >= elements
 	                         : invocations == elements;
