@@ -1291,6 +1291,38 @@ static std::optional<std::array<uint64_t, 3>> FillIndex(Value value, uint32_t ax
 	    });
 }
 
+// The element count of a fill that stops at a run-time count: the store is guarded by
+// "index < count" on its own element index, and the walker can evaluate the count.
+static Value BoundedFillCount(const Program& program, Value guard, Value index) {
+	const auto* inst = guard.Resolve().TryInstruction();
+	if (inst == nullptr) return {};
+	Value count;
+	if (inst->GetOpcode() == ValueOpcode::UGreaterThan32 && inst->Arg(1).Resolve() == index.Resolve()) {
+		count = inst->Arg(0).Resolve();
+	} else if (inst->GetOpcode() == ValueOpcode::ULessThan32 && inst->Arg(0).Resolve() == index.Resolve()) {
+		count = inst->Arg(1).Resolve();
+	}
+	if (count.IsEmpty() || count.GetType() != Type::U32 ||
+	    !ValidateRuntimeValue(program, count, RuntimeValueType::Integer)) return {};
+	return count;
+}
+
+// The words a tree of selects can yield under the store's guard, whatever its conditions are.
+static bool SelectedWords(Value value, Value guard, std::array<Value, 4>& words, uint32_t& count,
+                          uint32_t depth = 0) {
+	value = ResolveActiveU32(value, guard);
+	if (value.IsEmpty() || depth > 16) return false;
+	const auto* inst = value.TryInstruction();
+	if (inst != nullptr && inst->GetOpcode() == ValueOpcode::SelectU32) {
+		return SelectedWords(inst->Arg(1), guard, words, count, depth + 1) &&
+		       SelectedWords(inst->Arg(2), guard, words, count, depth + 1);
+	}
+	if (std::find(words.begin(), words.begin() + count, value) != words.begin() + count) return true;
+	if (count == words.size()) return false;
+	words[count++] = value;
+	return true;
+}
+
 static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 	if (program.stage != ShaderType::Compute || program.blocks.empty() ||
 	    !program.info.samplers.empty()) {
@@ -1299,11 +1331,14 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 	std::unordered_set<const Block*> visited;
 	const auto*                      block = program.blocks.front();
 	const Inst*                      store = nullptr;
+	// Branches that skip ahead when no invocation passes a condition. The store must carry the
+	// same condition as its own guard, so that taking the branch changes nothing.
+	std::vector<std::pair<Value, const Block*>> skips;
 	for (;;) {
 		if (block == nullptr || !visited.insert(block).second) return {};
 		for (const auto& inst: *block) {
 			if (AddressOpcodeInfoOf(inst.GetOpcode()).access != AddressAccess::None) return {};
-			if (!inst.MayHaveSideEffects()) continue;
+			if (!inst.MayHaveSideEffects() || inst.GetOpcode() == ValueOpcode::Reference) continue;
 			if (store != nullptr || (BufferAccessOf(inst.GetOpcode()) != BufferAccess::Write &&
 			                         inst.GetOpcode() != ValueOpcode::ImageWrite))
 				return {};
@@ -1311,10 +1346,23 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 		}
 		const auto& term = block->terminator;
 		if (term.kind == CFG::TerminatorKind::Return) break;
-		if (term.kind != CFG::TerminatorKind::Branch) return {};
+		if (term.kind == CFG::TerminatorKind::ConditionalBranch && store == nullptr &&
+		    term.false_block != nullptr && !visited.contains(term.false_block)) {
+			skips.emplace_back(block->condition, term.false_block);
+		} else if (term.kind != CFG::TerminatorKind::Branch) {
+			return {};
+		}
 		block = term.true_block;
 	}
 	if (store == nullptr || visited.size() != program.blocks.size()) return {};
+	for (const auto& [condition, target]: skips) {
+		// Every block is on the path taken, so a skip lands after the store.
+		const auto* reference = condition.Resolve().TryInstruction();
+		const auto  skipped   = reference != nullptr && reference->GetOpcode() == ValueOpcode::ConditionRef
+		                            ? reference->Arg(0).Resolve() : condition.Resolve();
+		if (BufferAccessOf(store->GetOpcode()) != BufferAccess::Write ||
+		    skipped != store->Arg(5).Resolve() || !visited.contains(target)) return {};
+	}
 	for (const auto& buffer: program.info.buffers) {
 		if (buffer.read && (!buffer.scalar || buffer.written)) return {};
 	}
@@ -1358,9 +1406,13 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 		    store->Arg(3).Resolve() != Value(0u))
 			return {};
 		guard = store->Arg(5).Resolve();
-		if (!IsFullDispatchPredicate(guard)) return {};
-		if (!memory.formatted || memory.typed || !memory.idxen || memory.offen || memory.offset != 0 ||
-		    memory.data_bits != 32 ||
+		if (!IsFullDispatchPredicate(guard)) {
+			result.element_count = BoundedFillCount(program, guard, store->Arg(1));
+			if (result.element_count.IsEmpty()) return {};
+		}
+		// An unformatted store writes one dword per index, whatever the descriptor's stride is.
+		if ((!memory.formatted && memory.data_dwords != 1) || memory.typed || !memory.idxen ||
+		    memory.offen || memory.offset != 0 || memory.data_bits != 32 ||
 		    memory.data_dwords != static_cast<uint32_t>(store_op - stores.begin() + 1))
 			return {};
 		const auto address = FillIndex(store->Arg(1), 0, guard);
@@ -1378,6 +1430,16 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 	if (result.fill.words > 1 &&
 	    (vector == nullptr || vector->GetOpcode() != composites[result.fill.words - 2]))
 		return {};
+	if (result.fill.words == 1 && vector != nullptr && vector->GetOpcode() == ValueOpcode::SelectU32) {
+		// One word chosen among several run-time words: the fill is uniform when they all agree.
+		uint32_t count = 0;
+		if (!SelectedWords(data, guard, result.values, count)) return {};
+		for (uint32_t i = 0; i < count; ++i) {
+			if (result.values[i].GetType() != Type::U32 ||
+			    !ValidateRuntimeValue(program, result.values[i], RuntimeValueType::Integer)) return {};
+		}
+		return result;
+	}
 	for (uint32_t i = 0; i < result.fill.words; ++i) {
 		const auto word = ResolveActiveU32(result.fill.words == 1 ? data : vector->Arg(i), guard);
 		if (word.GetType() != Type::U32 ||
@@ -1703,6 +1765,13 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		uniform_fill = WalkedValue(program, fill.element_count, elements) && elements != 0;
 	for (uint32_t i = 0; i < words && uniform_fill; ++i) {
 		uniform_fill = WalkedValue(program, fill.values[i], stored[i]) && stored[i] == stored[0];
+	}
+	// A one-word fill may list further words its selects choose from: they must all agree.
+	for (uint32_t i = words; i < fill.values.size() && uniform_fill && fill.pattern_size.IsEmpty(); ++i) {
+		uint32_t other = 0;
+		if (!fill.values[i].IsEmpty()) {
+			uniform_fill = WalkedValue(program, fill.values[i], other) && other == stored[0];
+		}
 	}
 	if (uniform_fill) {
 		snapshot.uniform_fill = fill.fill;
