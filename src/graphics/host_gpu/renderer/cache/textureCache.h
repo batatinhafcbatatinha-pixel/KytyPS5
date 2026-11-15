@@ -78,6 +78,9 @@ public:
 	// Writes a copy into whole levels of one layer of a GPU-written image straight into it, and
 	// returns false for any other copy.
 	[[nodiscard]] bool CopyToImage(uint64_t address, uint64_t source, uint64_t size);
+	// Copies one image onto another when the two ranges are exactly the memory of two images of
+	// the same layout and the source's newest contents are in its image; false for anything else.
+	[[nodiscard]] bool CopyImageFromBuffer(uint64_t address, uint64_t source, uint64_t size);
 	[[nodiscard]] bool IsRegionRegistered(uint64_t address, uint64_t size);
 
 	[[nodiscard]] bool IsMeta(uint64_t address);

@@ -1883,6 +1883,49 @@ bool TextureCache::HasGpuWrittenImageAt(uint64_t address) {
 	return found;
 }
 
+bool TextureCache::CopyImageFromBuffer(uint64_t address, uint64_t source, uint64_t size) {
+	std::scoped_lock lock {m_lock};
+	// Each range must belong to one image only, and be all of its memory.
+	const auto whole_image = [&](uint64_t base) {
+		ImageId found {};
+		bool    only = true;
+		ForEachImageInRegion(base, size, [&](ImageId id, Image& image) {
+			only  = only && (!found || found == id) && image.info.data.address == base &&
+			        image.info.data.size == size;
+			found = id;
+		});
+		return only ? found : ImageId {};
+	};
+	const auto source_id      = whole_image(source);
+	const auto destination_id = whole_image(address);
+	if (!source_id || !destination_id) {
+		return false;
+	}
+	const auto& from = m_slot_images[source_id];
+	const auto& to   = m_slot_images[destination_id];
+	const auto  plain = [](const Image& image) {
+		return image.registered && !image.depth_id && image.backing.image != nullptr &&
+		       !image.info.IsDepth() && !image.info.IsVolume() && !image.info.HasMetadata() &&
+		       image.info.samples == 1 && image.backing.samples == 1 && image.info.stencil.size == 0;
+	};
+	// Equal bytes are equal texels only when both images lay their texels out the same way.
+	if (!plain(from) || !plain(to) || !from.SafeToDownload() ||
+	    from.info.pixel_format != to.info.pixel_format ||
+	    from.info.guest_format != to.info.guest_format || from.info.type != to.info.type ||
+	    from.info.extent != to.info.extent || from.info.pitch != to.info.pitch ||
+	    from.info.resources.levels != to.info.resources.levels ||
+	    from.info.resources.layers != to.info.resources.layers ||
+	    from.info.tile_mode != to.info.tile_mode || from.info.bgra16 != to.info.bgra16 ||
+	    from.info.bytes_per_block != to.info.bytes_per_block ||
+	    from.backing.format != to.backing.format || from.backing.extent != to.backing.extent ||
+	    from.backing.mip_levels != to.backing.mip_levels || from.backing.layers != to.backing.layers ||
+	    from.info.GetColorTransform() != to.info.GetColorTransform()) {
+		return false;
+	}
+	CopyImage(destination_id, source_id);
+	return true;
+}
+
 bool TextureCache::CopyToImage(uint64_t address, uint64_t source, uint64_t size) {
 	std::scoped_lock lock {m_lock};
 	Common::SmallVector<ImageId, 8> targets;

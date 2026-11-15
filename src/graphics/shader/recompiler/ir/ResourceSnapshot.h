@@ -17,7 +17,9 @@ struct DescriptorValue {
 	}
 };
 
-enum class UniformFillKind { None, Buffer, Image };
+// Copy: the program stores, at each element index, the dword it loads from another buffer at the
+// same index (source), instead of a fill value.
+enum class UniformFillKind { None, Buffer, Image, Copy };
 
 struct UniformFill {
 	UniformFillKind          kind         = UniformFillKind::None;
@@ -26,6 +28,7 @@ struct UniformFill {
 	uint32_t                 words        = 0;
 	uint32_t                 value        = 0;
 	uint32_t                 bounded_elements = 0;
+	uint32_t                 source           = 0;
 
 	bool operator==(const UniformFill&) const = default;
 };

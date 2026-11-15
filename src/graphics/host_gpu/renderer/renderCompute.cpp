@@ -91,7 +91,8 @@ bool ResolveComputeBufferFill(const ShaderComputeInputInfo& input, uint32_t grou
                               uint64_t& resolved_size) {
 	const auto& resources = *input.stage.resources;
 	const auto& fill      = resources.uniform_fill;
-	if (fill.kind != ShaderRecompiler::IR::UniformFillKind::Buffer) {
+	if (fill.kind != ShaderRecompiler::IR::UniformFillKind::Buffer &&
+	    fill.kind != ShaderRecompiler::IR::UniformFillKind::Copy) {
 		return false;
 	}
 	const auto element_size = fill.words * sizeof(uint32_t);
@@ -193,6 +194,19 @@ bool RenderExecutor::TryConsumeComputeFill(const ShaderComputeInputInfo& input,
 	if (!ResolveComputeBufferFill(input, group_x, group_y, group_z, mode, descriptor, packed_clear,
 	                              size)) {
 		return false;
+	}
+	if (fill.kind == ShaderRecompiler::IR::UniformFillKind::Copy) {
+		// The covered range is copied dword for dword from the source buffer. When both ranges
+		// are the whole memory of two images of one layout, and the source's newest contents are
+		// in its image, that is a copy between the images. Anything else runs the program.
+		const auto source =
+		    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[fill.source]);
+		if (program.info.buffers[fill.resource].formatted ||
+		    program.info.buffers[fill.source].formatted || source.AddTid() ||
+		    source.Base48() == 0 || source.GetSize() < size) {
+			return false;
+		}
+		return cache.CopyImageFromBuffer(descriptor.Base48(), source.Base48(), size);
 	}
 	const bool image_clear =
 	    cache.ClearImageFromBuffer(command, descriptor.Base48(), size, packed_clear);
