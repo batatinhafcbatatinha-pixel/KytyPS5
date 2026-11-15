@@ -6,12 +6,14 @@
 
 #include "common/assert.h"
 #include "common/debugCounters.h"
+#include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/pipeline/imageHeap.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 
 #include <algorithm>
+#include <atomic>
 #include <optional>
 
 namespace Libs::Graphics {
@@ -207,13 +209,34 @@ void CommandScheduler::SubmitToQueue(const SubmitInfo& submit, vk::CommandBuffer
 	}
 }
 
+// Printed once: the case in which the submit worker must not take a batch.
+static void NoteSubmitHeldBack() {
+	static std::atomic_flag noted;
+	if (!noted.test_and_set()) {
+		Log::WriteToConsoleAndLog("CommandScheduler: submit worker held back while a waiting thread "
+		                          "submits an earlier batch (queue kept in tick order)\n");
+	}
+}
+
 void CommandScheduler::SubmitThread(std::stop_token stop) {
 	for (;;) {
 		QueuedSubmit item;
 		{
 			std::unique_lock lock(m_submit_mutex);
-			m_submit_changed.wait(lock, stop, [this] { return !m_submits.empty(); });
-			if (m_submits.empty()) {
+			// Only one thread submits at a time. A batch taken here while a waiting thread is still
+			// submitting an earlier one could reach the queue first; the timeline semaphore would
+			// then be signalled with a lower value after a higher one and waits on it never end.
+			m_submit_changed.wait(lock, stop, [this] {
+				if (m_submits.empty()) {
+					return false;
+				}
+				if (m_submit_busy) {
+					NoteSubmitHeldBack();
+					return false;
+				}
+				return true;
+			});
+			if (m_submits.empty() || m_submit_busy) {
 				return;
 			}
 			item = m_submits.front();
