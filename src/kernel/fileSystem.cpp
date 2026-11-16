@@ -446,6 +446,14 @@ bool IsOpenDescriptor(int d) {
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
+// The application's own files are mounted read-only on the console; here they are the user's dump.
+static bool IsReadOnlyGuestPath(const char* path) {
+	while (path[0] == '/' && path[1] == '/') {
+		path++;
+	}
+	return std::strncmp(path, "/app0", 5) == 0 && (path[5] == '\0' || path[5] == '/');
+}
+
 int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 	PRINT_NAME();
 
@@ -483,6 +491,10 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 		case 1: rw_mode = Common::File::Mode::Write; break;
 		case 2: rw_mode = Common::File::Mode::ReadWrite; break;
 		default: EXIT("invalid flag_u: %u\n", flags_u);
+	}
+
+	if ((rw_mode != Common::File::Mode::Read || creat || trunc) && IsReadOnlyGuestPath(path)) {
+		return KERNEL_ERROR_EROFS;
 	}
 
 	EXIT_NOT_IMPLEMENTED(directory && rw_mode != Common::File::Mode::Read);
@@ -1248,6 +1260,9 @@ int KYTY_SYSV_ABI KernelTruncate(const char* path, int64_t length) {
 	if (path[0] != '/' || length < 0) {
 		return KERNEL_ERROR_EINVAL;
 	}
+	if (IsReadOnlyGuestPath(path)) {
+		return KERNEL_ERROR_EROFS;
+	}
 	size_t component_length = 0;
 	for (size_t i = 0; path[i] != '\0'; ++i) {
 		if (i >= 1023) {
@@ -1374,6 +1389,9 @@ int KYTY_SYSV_ABI KernelUnlink(const char* path) {
 	if (path == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
+	if (IsReadOnlyGuestPath(path)) {
+		return KERNEL_ERROR_EROFS;
+	}
 
 	auto real_file_name = g_mount_points->ResolvePath(path);
 	if (Common::IsArchivePath(real_file_name)) {
@@ -1408,6 +1426,9 @@ int KYTY_SYSV_ABI KernelRename(const char* from, const char* to) {
 
 	if (from == nullptr || to == nullptr) {
 		return KERNEL_ERROR_EINVAL;
+	}
+	if (IsReadOnlyGuestPath(from) || IsReadOnlyGuestPath(to)) {
+		return KERNEL_ERROR_EROFS;
 	}
 
 	auto from_path = std::string(from);
@@ -1488,6 +1509,9 @@ int KYTY_SYSV_ABI KernelMkdir(const char* path, uint16_t mode) {
 	if (path == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
+	if (IsReadOnlyGuestPath(path)) {
+		return KERNEL_ERROR_EROFS;
+	}
 
 	if (std::strlen(path) > 255) {
 		return KERNEL_ERROR_ENAMETOOLONG;
@@ -1517,6 +1541,9 @@ int KYTY_SYSV_ABI KernelRmdir(const char* path) {
 
 	if (path == nullptr) {
 		return KERNEL_ERROR_EFAULT;
+	}
+	if (IsReadOnlyGuestPath(path)) {
+		return KERNEL_ERROR_EROFS;
 	}
 
 	if (std::strlen(path) > 255) {
