@@ -144,15 +144,18 @@ struct MemoryInfo {
 	bool                    offen                                                 = false;
 	bool                    coherent                                              = false;
 	bool                    planning_only                                         = false;
+	// A run-time V# write whose V# comes from a bound descriptor table (ShaderInfo::written_tables).
+	bool                    table_write                                           = false;
 
 	[[nodiscard]] bool IsCoherentBufferPairLoad(ValueOpcode opcode) const {
 		return kind == ResourceKind::Buffer && opcode == ValueOpcode::LoadBufferU32x2 && coherent &&
 		       !typed && !formatted && data_bits == 32u;
 	}
 
-	// A run-time V# store or 32-bit integer atomic through the host view (HostBdaWrites).
-	[[nodiscard]] bool SupportsIndirectBufferWrite(ValueOpcode opcode) const {
-		if (typed || formatted || data_bits != 32u || !HostBdaWrites()) return false;
+	// A run-time V# store or 32-bit integer atomic: through the host view (HostBdaWrites), or into
+	// the buffers of a descriptor table that the dispatch marks written (tracked).
+	[[nodiscard]] bool SupportsIndirectBufferWrite(ValueOpcode opcode, bool tracked = false) const {
+		if (typed || formatted || data_bits != 32u || !(HostBdaWrites() || tracked || table_write)) return false;
 		switch (opcode) {
 			case ValueOpcode::StoreBufferU32:
 			case ValueOpcode::StoreBufferU32x2:
@@ -633,6 +636,15 @@ struct ShaderInfo {
 	std::vector<SampledResourcePair> sampled_pairs;
 	std::vector<std::array<uint32_t, 2>> address_bases; // Flattened SRT slots of global bases.
 	std::vector<std::array<uint32_t, 2>> user_address_bases; // User data dwords of global bases.
+	// Bound buffers holding V# records (first at byte offset, one per stride bytes) that run-time
+	// descriptor writes select from: every record's range is written by the stage.
+	struct WrittenTable {
+		uint32_t buffer = 0;
+		uint32_t offset = 0;
+		uint32_t stride = 0;
+		bool     operator==(const WrittenTable& other) const = default;
+	};
+	std::vector<WrittenTable>        written_tables;
 	std::array<uint32_t, 2>          ray_query_tlas {}; // Flattened SRT slots of the TLAS header.
 	std::vector<StageInput>          inputs;
 	std::vector<StageOutput>         outputs;

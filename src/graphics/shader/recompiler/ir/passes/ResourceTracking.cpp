@@ -720,6 +720,7 @@ public:
 		m_info.sampled_pairs.clear();
 		m_info.address_bases.clear();
 		m_info.user_address_bases.clear();
+		m_info.written_tables.clear();
 		m_shader_writes = HasShaderMemoryWrites(program);
 	}
 
@@ -735,6 +736,17 @@ public:
 		for (auto* block: m_program.blocks) {
 			for (auto& inst: *block) {
 				Collect(inst);
+			}
+		}
+		for (const auto& table: m_written_tables) {
+			const auto bound = std::ranges::find(m_info.buffers, table.buffer, &BufferResource::source);
+			if (bound == m_info.buffers.end()) {
+				Fail(0, "descriptor table of a run-time buffer write is not a bound buffer");
+			}
+			const ShaderInfo::WrittenTable entry {
+			    static_cast<uint32_t>(bound - m_info.buffers.begin()), table.offset, table.stride};
+			if (std::ranges::find(m_info.written_tables, entry) == m_info.written_tables.end()) {
+				m_info.written_tables.push_back(entry);
 			}
 		}
 		for (const auto& patch: m_handle_patches) {
@@ -4499,6 +4511,48 @@ private:
 		return bound->source;
 	}
 
+	// A write whose V# is one record of a bound buffer, read at a run-time offset: the dispatch
+	// marks every record of that table written, so the store can go through the run-time V#.
+	bool WrittenDescriptorTable(const Inst& handle) {
+		if (handle.NumArgs() < 4) return false;
+		const Inst* first = nullptr;
+		uint32_t    base  = 0;
+		for (uint32_t word = 0; word < 4u; ++word) {
+			const auto* read = handle.Arg(word).Resolve().TryInstruction();
+			if (read == nullptr || read->GetOpcode() != ValueOpcode::ReadConstBuffer ||
+			    read->NumArgs() != 2u) return false;
+			const auto& memory = m_program.memory_info[read->Flags<MemoryFlags>().index];
+			if (memory.kind != ResourceKind::ScalarBuffer || memory.planning_only) return false;
+			if (word == 0u) {
+				first = read;
+				base  = memory.offset;
+			} else if (memory.offset != base + word * 4u ||
+			           !EquivalentValue(m_program, read->Arg(0), first->Arg(0)) ||
+			           !EquivalentValue(m_program, read->Arg(1), first->Arg(1))) {
+				return false;
+			}
+		}
+		const auto* table = first->Arg(0).Resolve().TryInstruction();
+		if (table == nullptr || table->GetOpcode() != ValueOpcode::GetBufferResource ||
+		    FindIndirectDescriptor(*table) != nullptr) return false;
+		const auto&      memory = m_program.memory_info[first->Flags<MemoryFlags>().index];
+		DescriptorSource descriptor;
+		MakeSource(*table, 4, false, false, memory.resource * 4u, descriptor, first->Flags<MemoryFlags>().pc);
+		uint32_t bad_dword = 0;
+		if (!ValidateSource(descriptor, bad_dword)) return false;
+		// Records are 16 bytes or more apart when the offset is an index shifted left; any other
+		// offset is taken to reach every DWORD.
+		uint32_t    stride = 4;
+		const auto* shift  = first->Arg(1).Resolve().TryInstruction();
+		if (shift != nullptr && shift->GetOpcode() == ValueOpcode::ShiftLeftLogical32 &&
+		    shift->Arg(1).Resolve().IsImmediate() && shift->Arg(1).Resolve().GetType() == Type::U32) {
+			const auto bits = shift->Arg(1).Resolve().U32();
+			if (bits >= 4u && bits <= 12u) stride = 1u << bits;
+		}
+		m_written_tables.push_back({InternSource(descriptor), base, stride});
+		return true;
+	}
+
 	uint32_t AddBuffer(uint32_t source, const MemoryInfo& memory, ValueOpcode op, uint32_t pc) {
 		for (uint32_t i = 0; i < m_info.buffers.size(); i++) {
 			if (m_info.buffers[i].source == source) {
@@ -4726,7 +4780,12 @@ private:
 				// through the run-time V#, which reaches memory outside the bound descriptors.
 				source = buffer != BufferAccess::Read && !runtime ? CarriedBufferSource(*handle)
 				                                                   : UINT32_MAX;
-				if (source == UINT32_MAX && plain && memory.SupportsIndirectBufferWrite(op)) {
+				const bool tracked = source == UINT32_MAX && plain && !runtime && handle != nullptr &&
+				                     buffer != BufferAccess::Read && !memory.SupportsIndirectBufferWrite(op) &&
+				                     memory.SupportsIndirectBufferWrite(op, true) &&
+				                     WrittenDescriptorTable(*handle);
+				if (source == UINT32_MAX && plain && (tracked || memory.SupportsIndirectBufferWrite(op))) {
+					m_program.memory_info[flags.index].table_write = tracked;
 					m_program.memory_info[flags.index].kind = ResourceKind::IndirectBuffer;
 					m_program.has_address_writes            = true;
 					return;
@@ -4863,6 +4922,7 @@ private:
 	ShaderInfo                                 m_info;
 	std::vector<DescriptorSource>              m_sources;
 	std::vector<HandlePatch>                   m_handle_patches;
+	std::vector<ShaderInfo::WrittenTable>      m_written_tables; // buffer holds the source here.
 	std::vector<MemoryPatch>                   m_memory_patches;
 	std::vector<IndirectDescriptorPlan>             m_indirect_descriptors;
 	std::map<const Inst*, Value>              m_descriptor_values;

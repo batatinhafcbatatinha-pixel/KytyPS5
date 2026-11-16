@@ -30,6 +30,8 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <cinttypes>
+#include <cstdio>
 #include <cstring>
 #include <cstddef>
 #include <unordered_map>
@@ -822,6 +824,55 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	}
 }
 
+// A stage that stores through V# records it selects at run time from a bound table writes any of
+// the table's buffers: each gets what a bound written buffer gets, a cache buffer holding its
+// current bytes that owns the range from here on, so the stores land in tracked memory.
+template <typename Snapshot>
+static void MarkWrittenTable(RenderContext& context, const Snapshot& bound, uint32_t offset,
+                             uint32_t stride) {
+	constexpr uint64_t MaxTableBytes  = uint64_t {1} << 20u;
+	constexpr uint64_t MaxBufferBytes = uint64_t {256} << 20u;
+	const auto         table          = DecodeNativeDescriptor<ShaderBufferResource>(bound);
+	const auto         address        = table.Base48();
+	const auto         size           = std::min<uint64_t>(table.GetSize(), MaxTableBytes);
+	if (address == 0 || size < offset + sizeof(ShaderBufferResource) || stride == 0 ||
+	    !context.IsMapped(address, size)) {
+		return;
+	}
+	auto& cache = context.GetBufferCache();
+	cache.ReadMemory(address, size);
+	std::vector<uint32_t> words(size / sizeof(uint32_t));
+	if (!Libs::LibKernel::Memory::CopySparseMemory(address, words.data(), words.size() * sizeof(uint32_t))) {
+		return;
+	}
+	std::vector<std::pair<uint64_t, uint64_t>> ranges;
+	for (uint64_t at = offset; at + sizeof(ShaderBufferResource) <= size; at += stride) {
+		ShaderBufferResource record;
+		std::memcpy(record.fields, words.data() + at / sizeof(uint32_t), sizeof(record.fields));
+		const auto base  = record.Base48();
+		const auto bytes = record.GetSize();
+		if (base == 0 || bytes == 0 || bytes > MaxBufferBytes || (base & 3u) != 0 ||
+		    !GuestRange {base, bytes}.Valid() || !context.IsMapped(base, bytes)) {
+			continue;
+		}
+		ranges.emplace_back(base, bytes);
+	}
+	std::ranges::sort(ranges);
+	ranges.erase(std::unique(ranges.begin(), ranges.end()), ranges.end());
+	static std::atomic<uint32_t> logged {0};
+	if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+		uint64_t total = 0;
+		for (const auto& range: ranges) total += range.second;
+		std::printf("Run-time descriptor writes: table 0x%016" PRIx64 " size 0x%" PRIx64 " stride %u, %zu buffers, "
+		     "0x%" PRIx64 " bytes marked written\n", address, size, stride, ranges.size(), total);
+		std::fflush(stdout);
+	}
+	for (const auto [base, bytes]: ranges) {
+		(void)cache.ObtainBuffer(base, bytes, true);
+		context.GetTextureCache().InvalidateMemoryFromGPU(base, bytes);
+	}
+}
+
 void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 	KYTY_PROFILER_FUNCTION();
 	auto& cache = m_context.GetBufferCache();
@@ -877,6 +928,9 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 				size = Libs::LibKernel::Memory::ClampRangeSize(address, size);
 			}
 			source = {address, size, cache.FindBuffer(address, size)};
+		}
+		for (const auto& table: program.info.written_tables) {
+			MarkWrittenTable(m_context, snapshot.buffers[table.buffer], table.offset, table.stride);
 		}
 	}
 }

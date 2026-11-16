@@ -359,7 +359,8 @@ BufferId BufferCache::FindBuffer(uint64_t vaddr, uint64_t size) {
 		return NULL_BUFFER_ID;
 	}
 	if (!GuestRange {vaddr, size}.Valid()) {
-		EXIT("BufferCache: invalid buffer discovery request\n");
+		EXIT("BufferCache: invalid buffer discovery request 0x%016" PRIx64 " size 0x%" PRIx64
+		     " (program 0x%016" PRIx64 ")\n", vaddr, size, m_current_program);
 	}
 	const auto* owner = m_page_table.Find(vaddr >> PageTable::kPageBits);
 	if (owner != nullptr && *owner) {
