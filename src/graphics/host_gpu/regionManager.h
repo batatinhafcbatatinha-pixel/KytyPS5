@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/regionDefinitions.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <mutex>
 #include <utility>
 
@@ -79,12 +80,20 @@ static_assert(std::atomic_uint32_t::is_always_lock_free);
 // before it is submitted, so a page uploaded during one submission stays current for it.
 inline std::atomic<uint64_t> g_tracker_epoch {1};
 inline std::atomic<bool>     g_sticky_pages {true};
+// Frames the guest has submitted for display so far.
+inline std::atomic<uint64_t> g_tracker_frame {1};
 
 inline uint64_t TrackerEpoch() noexcept {
 	return g_tracker_epoch.load(std::memory_order_relaxed);
 }
 inline void AdvanceTrackerEpoch() noexcept {
 	g_tracker_epoch.fetch_add(1, std::memory_order_relaxed);
+}
+inline uint64_t TrackerFrame() noexcept {
+	return g_tracker_frame.load(std::memory_order_relaxed);
+}
+inline void AdvanceTrackerFrame() noexcept {
+	g_tracker_frame.fetch_add(1, std::memory_order_relaxed);
 }
 inline bool StickyPagesEnabled() noexcept {
 	return g_sticky_pages.load(std::memory_order_relaxed);
@@ -168,7 +177,7 @@ public:
 						if (m_rewritten.Get(page)) {
 							if (!m_has_hot) {
 								m_has_hot   = true;
-								m_hot_since = TrackerEpoch();
+								m_hot_since = TrackerFrame();
 							}
 							m_hot.Set(page);
 						} else {
@@ -200,7 +209,7 @@ public:
 		if constexpr (clear && source == DirtySource::Cpu) {
 			if (m_has_hot && StickyPagesEnabled()) {
 				const auto epoch = TrackerEpoch();
-				if (epoch - m_hot_since > HotPageLifetime) {
+				if (TrackerFrame() - m_hot_since > HotPageLifetime()) {
 					// Pages stop counting as rewritten after a while; they qualify again by faulting.
 					m_hot.Clear();
 					m_rewritten.Clear();
@@ -284,8 +293,18 @@ private:
 		        static_cast<size_t>((offset + size + TRACKER_PAGE_SIZE - 1) / TRACKER_PAGE_SIZE)};
 	}
 
-	// Submissions a page stays in the rewritten set before it is write-watched again.
-	static constexpr uint64_t HotPageLifetime = 4096;
+	// Frames a page stays in the rewritten set before it is write-watched again. A page the guest
+	// stopped writing is uploaded on every submission meanwhile, so the set is rebuilt often: a
+	// page written every frame pays two faults per period to stay in it.
+	// KYTY_REWRITTEN_FRAMES=n sets another period.
+	[[nodiscard]] static uint64_t HotPageLifetime() noexcept {
+		static const uint64_t frames = [] {
+			const char* value = std::getenv("KYTY_REWRITTEN_FRAMES");
+			const auto  given = value != nullptr ? std::strtoull(value, nullptr, 10) : 0;
+			return given != 0 ? given : uint64_t {64};
+		}();
+		return frames;
+	}
 
 	PageManager& m_page_manager;
 	uint64_t     m_cpu_addr = 0;
