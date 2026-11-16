@@ -1,5 +1,7 @@
 #include "graphics/presentation/videoOut.h"
 
+#include "graphics/host_gpu/regionManager.h"
+
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
@@ -904,6 +906,7 @@ bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRe
 	request_id = r.id;
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::FlipsRequested);
 	Common::FrameClock::NoteFlip();
+	Graphics::AdvanceTrackerFrame();
 
 	cfg.flip_status.flipPendingNum++;
 	cfg.flip_status.submitProcessTimeCounter = r.submit_ptc;

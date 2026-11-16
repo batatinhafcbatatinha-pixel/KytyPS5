@@ -1107,7 +1107,12 @@ void BufferCache::SynchronizeBda(const RangeSet& mapped) {
 			}
 		});
 		std::lock_guard lock(m_bda_sync_mutex);
-		watched.ForEach([&](uint64_t begin, uint64_t end) { m_bda_unwatched.Subtract(begin, end - begin); });
+		// A page leaves once it is watched again; whatever was written before that is uploaded now.
+		watched.ForEach([&](uint64_t begin, uint64_t end) {
+			m_bda_unwatched.Subtract(begin, end - begin);
+			m_bda_sync.Add(begin, end - begin);
+		});
+		if (!watched.Empty()) m_bda_sync_pending.store(true, std::memory_order_release);
 		m_bda_unwatched.ForEach([&](uint64_t begin, uint64_t end) { m_bda_sync.Add(begin, end - begin); });
 		m_bda_unwatched_any.store(!m_bda_unwatched.Empty(), std::memory_order_release);
 		if (!m_bda_unwatched.Empty()) {
