@@ -195,6 +195,9 @@ struct FakeImageHeap final : ImageHeapSource {
     view = {.slots = 0x123456789abcull, .slot_count = 36u, .kinds = kinds};
     return true;
   }
+  uint32_t GlobalEntry(const std::array<uint32_t, GlobalMapKeyWords> &) override {
+    return UINT32_MAX;
+  }
 };
 
 struct LinearTestMemory {
