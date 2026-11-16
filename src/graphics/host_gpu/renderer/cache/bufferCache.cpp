@@ -15,6 +15,9 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "kernel/memory.h"
 
+#include <array>
+#include <cstdlib>
+#include <xxhash.h>
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
@@ -437,6 +440,7 @@ void BufferCache::JoinOverlap(BufferId new_id, BufferId overlap_id, bool accumul
 }
 
 BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
+	m_bda_unwatched_hash.clear();
 	const auto end = Common::AlignUp(vaddr + size, CACHING_PAGESIZE);
 	vaddr = Common::AlignDown(vaddr, CACHING_PAGESIZE);
 	size               = end - vaddr;
@@ -1098,12 +1102,34 @@ void BufferCache::SynchronizeBda(const RangeSet& mapped) {
 			std::lock_guard lock(m_bda_sync_mutex);
 			return m_bda_unwatched;
 		}();
+		// KYTY_BDA_HASH=0 queues every unwatched page on every submission. A small set is queued
+		// whole as well: hashing it costs about what uploading it does.
+		static const bool enabled = [] {
+			const char* value = std::getenv("KYTY_BDA_HASH");
+			return value == nullptr || value[0] != '0';
+		}();
+		uint64_t unwatched_bytes = 0;
+		pages.ForEach([&](uint64_t begin, uint64_t end) { unwatched_bytes += end - begin; });
+		const bool compare = enabled && unwatched_bytes >= (uint64_t {4} << 20u);
 		RangeSet watched;
+		RangeSet changed;
 		pages.ForEach([&](uint64_t begin, uint64_t end) {
 			for (auto page = begin; page < end; page += TRACKER_PAGE_SIZE) {
 				if (!m_memory_tracker.IsRegionUnwatched(page, TRACKER_PAGE_SIZE)) {
 					watched.Add(page, TRACKER_PAGE_SIZE);
+					m_bda_unwatched_hash.erase(page);
+					continue;
 				}
+				// Most of these pages are not written between two submissions: the upload is
+				// skipped while a page's bytes are the ones queued last.
+				std::array<uint8_t, TRACKER_PAGE_SIZE> bytes;
+				if (compare && LibKernel::Memory::CopySparseMemory(page, bytes.data(), bytes.size())) {
+					const auto hash = XXH3_64bits(bytes.data(), bytes.size());
+					const auto [entry, inserted] = m_bda_unwatched_hash.try_emplace(page, hash);
+					if (!inserted && entry->second == hash) continue;
+					entry->second = hash;
+				}
+				changed.Add(page, TRACKER_PAGE_SIZE);
 			}
 		});
 		std::lock_guard lock(m_bda_sync_mutex);
@@ -1113,9 +1139,9 @@ void BufferCache::SynchronizeBda(const RangeSet& mapped) {
 			m_bda_sync.Add(begin, end - begin);
 		});
 		if (!watched.Empty()) m_bda_sync_pending.store(true, std::memory_order_release);
-		m_bda_unwatched.ForEach([&](uint64_t begin, uint64_t end) { m_bda_sync.Add(begin, end - begin); });
+		changed.ForEach([&](uint64_t begin, uint64_t end) { m_bda_sync.Add(begin, end - begin); });
 		m_bda_unwatched_any.store(!m_bda_unwatched.Empty(), std::memory_order_release);
-		if (!m_bda_unwatched.Empty()) {
+		if (!changed.Empty()) {
 			m_bda_sync_pending.store(true, std::memory_order_release);
 		}
 	}
