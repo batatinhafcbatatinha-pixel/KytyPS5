@@ -1478,6 +1478,12 @@ void DbgExitIfHandler(const char *, const char *, int) { std::abort(); }
 
 } // namespace Common
 
+// Defined with resource tracking, which this test does not link.
+namespace Libs::Graphics::ShaderRecompiler::IR {
+void SetWalkedProgram(uint64_t) {}
+bool HostBdaWrites() { return false; }
+} // namespace Libs::Graphics::ShaderRecompiler::IR
+
 int main() {
   TestWalkerLoadsBypassSpecializationReader();
   TestNativeNestedSrtRefresh();
