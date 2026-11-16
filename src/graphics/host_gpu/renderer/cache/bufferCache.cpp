@@ -559,12 +559,26 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	    m_memory_tracker.IsRegionCpuModified(vaddr, size)) {
 		const auto alignment = std::max<uint64_t>(
 		    m_graphics.physical_device_properties.limits.minUniformBufferOffsetAlignment, 1);
+		// CPU writes a submission reads land before it is submitted: a range streamed once in this
+		// submission serves its later draws too. A wrap of the stream buffer drops the memo.
+		if (m_stream_memo_epoch != TrackerEpoch() || m_stream_memo_last != m_stream_buffer.Wraps()) {
+			m_stream_memo_epoch = TrackerEpoch();
+			m_stream_memo_last  = m_stream_buffer.Wraps();
+			m_stream_memo.clear();
+		}
+		const auto memo_key = vaddr ^ (size << 48u) ^ (alignment << 40u);
+		if (const auto memo = m_stream_memo.find(memo_key); memo != m_stream_memo.end()) {
+			return {&m_stream_buffer, memo->second};
+		}
 		auto [mapped, offset] = m_stream_buffer.Map(size, alignment, false);
 		if (mapped != nullptr) {
 			if (!LibKernel::Memory::CopySparseMemory(vaddr, mapped, size)) {
 				EXIT("BufferCache: failed to read sparse guest buffer memory\n");
 			}
 			m_stream_buffer.Commit();
+			if (m_stream_memo_last == m_stream_buffer.Wraps()) {
+				m_stream_memo.emplace(memo_key, offset);
+			}
 			return {&m_stream_buffer, offset};
 		}
 	}
@@ -1111,8 +1125,10 @@ void BufferCache::SynchronizeBda(const RangeSet& mapped) {
 		uint64_t unwatched_bytes = 0;
 		pages.ForEach([&](uint64_t begin, uint64_t end) { unwatched_bytes += end - begin; });
 		const bool compare = enabled && unwatched_bytes >= (uint64_t {4} << 20u);
-		RangeSet watched;
-		RangeSet changed;
+		const auto backing_base = LibKernel::Memory::GuestBackingBase();
+		const auto backing_size = LibKernel::Memory::GuestBackingSize();
+		RangeSet   watched;
+		RangeSet   changed;
 		pages.ForEach([&](uint64_t begin, uint64_t end) {
 			for (auto page = begin; page < end; page += TRACKER_PAGE_SIZE) {
 				if (!m_memory_tracker.IsRegionUnwatched(page, TRACKER_PAGE_SIZE)) {
@@ -1122,9 +1138,12 @@ void BufferCache::SynchronizeBda(const RangeSet& mapped) {
 				}
 				// Most of these pages are not written between two submissions: the upload is
 				// skipped while a page's bytes are the ones queued last.
-				std::array<uint8_t, TRACKER_PAGE_SIZE> bytes;
-				if (compare && LibKernel::Memory::CopySparseMemory(page, bytes.data(), bytes.size())) {
-					const auto hash = XXH3_64bits(bytes.data(), bytes.size());
+				// Hashed in place through the backing view, which no page protection covers.
+				uint64_t backing = 0;
+				if (compare && backing_base != 0 && LibKernel::Memory::GuestBackingOffset(page, &backing) &&
+				    backing + TRACKER_PAGE_SIZE <= backing_size) {
+					const auto hash = XXH3_64bits(reinterpret_cast<const void*>(backing_base + backing),
+					                              TRACKER_PAGE_SIZE);
 					const auto [entry, inserted] = m_bda_unwatched_hash.try_emplace(page, hash);
 					if (!inserted && entry->second == hash) continue;
 					entry->second = hash;

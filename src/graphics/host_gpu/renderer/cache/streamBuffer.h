@@ -114,6 +114,8 @@ public:
 	[[nodiscard]] std::pair<uint8_t*, uint64_t> Map(uint64_t size, uint64_t alignment = 0,
 	                                                bool allow_wait = true);
 	void                                        Commit();
+	// Times the write position returned to the start: earlier offsets may be overwritten after one.
+	[[nodiscard]] uint64_t                      Wraps() const noexcept { return m_wraps; }
 	[[nodiscard]] Download                      MapDownload(uint64_t size, uint64_t alignment);
 	[[nodiscard]] uint64_t Copy(const void* source, uint64_t size, uint64_t alignment = 0);
 
@@ -133,6 +135,7 @@ private:
 	                                                size_t& wait_cursor, uint64_t& wait_bound);
 
 	uint64_t              m_offset      = 0;
+	uint64_t              m_wraps       = 0;
 	uint64_t              m_mapped_size = 0;
 	std::vector<Watch>    m_current_watches;
 	size_t                m_current_watch_cursor = 0;
