@@ -745,7 +745,8 @@ public:
 			}
 			const ShaderInfo::WrittenTable entry {
 			    static_cast<uint32_t>(bound - m_info.buffers.begin()), table.offset, table.stride};
-			if (std::ranges::find(m_info.written_tables, entry) == m_info.written_tables.end()) {
+			if (std::ranges::none_of(m_info.written_tables,
+			                         [&](const auto& other) { return other == entry; })) {
 				m_info.written_tables.push_back(entry);
 			}
 		}
