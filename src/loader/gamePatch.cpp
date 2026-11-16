@@ -8,6 +8,9 @@
 #include "loader/runtimeLinker.h"
 #include "loader/systemContent.h"
 
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -29,6 +32,9 @@ struct Write {
 	uint64_t             target_address = 0;
 	std::vector<uint8_t> off;
 	std::vector<uint8_t> on;
+	// Fork extension ("hold": true): the game computes the value after start, so nothing is
+	// checked or written at load; a thread replaces "off" by "on" whenever it finds "off" there.
+	bool hold = false;
 };
 
 struct Plan {
@@ -44,6 +50,47 @@ using Json = nlohmann::json;
 
 std::unique_ptr<Plan> g_pending_plan;
 std::vector<uint64_t> g_applied_cave_pages;
+std::vector<Write>    g_held_writes;
+std::thread           g_hold_thread;
+std::atomic<bool>     g_hold_stop {false};
+
+void StopHolding() {
+	g_hold_stop.store(true, std::memory_order_release);
+	if (g_hold_thread.joinable()) {
+		g_hold_thread.join();
+	}
+	g_held_writes.clear();
+	g_hold_stop.store(false, std::memory_order_release);
+}
+
+// The game uses a value soon after computing it, so each one is watched closely until its first
+// replacement (or for two minutes), then a few hundred times a second.
+void HoldWrites() {
+	std::vector<bool> replaced(g_held_writes.size(), false);
+	const auto        start = std::chrono::steady_clock::now();
+	bool              close = true;
+	while (!g_hold_stop.load(std::memory_order_acquire)) {
+		for (size_t index = 0; index < g_held_writes.size(); index++) {
+			const auto& write  = g_held_writes[index];
+			auto*       target = reinterpret_cast<void*>(write.target_address);
+			if (std::memcmp(target, write.off.data(), write.off.size()) == 0) {
+				std::memcpy(target, write.on.data(), write.on.size());
+				if (!replaced[index]) {
+					replaced[index] = true;
+					::printf("Game cheat: held value at 0x%llx replaced\n",
+					         static_cast<unsigned long long>(write.target_address));
+				}
+			}
+		}
+		if (close) {
+			close = std::chrono::steady_clock::now() - start < std::chrono::minutes(2) &&
+			        std::find(replaced.begin(), replaced.end(), false) != replaced.end();
+			std::this_thread::yield();
+		} else {
+			std::this_thread::sleep_for(std::chrono::milliseconds(3));
+		}
+	}
+}
 
 bool Fail(std::string* error, std::string message) {
 	*error = std::move(message);
@@ -91,6 +138,7 @@ bool LoadPlan(const std::filesystem::path& path, Plan* plan, std::string* error)
 			    write.off.size() != write.on.size()) {
 				return Fail(error, "invalid mod memory bytes");
 			}
+			write.hold = entry.value("hold", false);
 			plan->writes.push_back(std::move(write));
 		}
 	}
@@ -133,6 +181,12 @@ bool IsZero(const std::vector<uint8_t>& bytes) {
 bool TranslateAndValidate(Plan* plan, const Program& program, uint64_t source_base) {
 	for (auto& write: plan->writes) {
 		Translate(program, source_base, write.source_address, &write.target_address);
+		if (write.hold) {
+			if (!IsInsideProgram(program, write.target_address, write.off.size())) {
+				return false;
+			}
+			continue;
+		}
 		if (!IsZero(write.off) &&
 		    (!IsInsideProgram(program, write.target_address, write.off.size()) ||
 		     std::memcmp(reinterpret_cast<const void*>(write.target_address), write.off.data(),
@@ -145,7 +199,7 @@ bool TranslateAndValidate(Plan* plan, const Program& program, uint64_t source_ba
 
 bool Matches(Plan* plan, const Program& program, uint64_t* source_base) {
 	const auto anchor = std::find_if(plan->writes.begin(), plan->writes.end(),
-	                                 [](const Write& write) { return !IsZero(write.off); });
+	                                 [](const Write& write) { return !write.hold && !IsZero(write.off); });
 	if (anchor == plan->writes.end() || program.mapped_size < anchor->off.size()) {
 		return false;
 	}
@@ -228,6 +282,9 @@ bool ApplyWrites(Plan* plan, const Program& program, std::string* error) {
 
 	for (int external = 1; external >= 0; external--) {
 		for (const auto& write: plan->writes) {
+			if (write.hold) {
+				continue;
+			}
 			if (static_cast<int>(
 			        !IsInsideProgram(program, write.target_address, write.on.size())) != external) {
 				continue;
@@ -291,12 +348,22 @@ bool ApplyPending(Program* program) {
 	for (const auto& name: g_pending_plan->mod_names) {
 		::printf("Successfully applied cheat: %s\n", name.c_str());
 	}
+	StopHolding();
+	for (const auto& write: g_pending_plan->writes) {
+		if (write.hold) {
+			g_held_writes.push_back(write);
+		}
+	}
+	if (!g_held_writes.empty()) {
+		g_hold_thread = std::thread(HoldWrites);
+	}
 	g_applied_cave_pages = std::move(g_pending_plan->cave_pages);
 	g_pending_plan.reset();
 	return true;
 }
 
 void Clear() {
+	StopHolding();
 	if (g_pending_plan != nullptr) {
 		ReleaseCaves(&g_pending_plan->cave_pages);
 	}

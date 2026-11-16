@@ -1676,7 +1676,15 @@ void TextureCache::DownloadDepth(Image& image, Buffer& destination, uint64_t des
 	const uint64_t guest_slice    = texels_per_slice * info.bytes_per_block;
 	EXIT_NOT_IMPLEMENTED(transfer_slice > UINT64_MAX / layers);
 	const uint64_t transfer_size = transfer_slice * layers;
-	EXIT_NOT_IMPLEMENTED(guest_slice > full_slice_size);
+	if (guest_slice > full_slice_size) {
+		EXIT("TextureCache: depth download slice exceeds the image's slice: %ux%u pitch %u layers %u samples %u "
+		     "format %u, %u bytes per block, slice 0x%" PRIx64 " > 0x%" PRIx64 ", data 0x%016" PRIx64 "+0x%" PRIx64
+		     ", tiled %d\n",
+		     info.extent.width, info.extent.height, info.pitch, layers, static_cast<uint32_t>(image.backing.samples),
+		     static_cast<uint32_t>(info.pixel_format), static_cast<uint32_t>(info.bytes_per_block), guest_slice,
+		     static_cast<uint64_t>(full_slice_size), static_cast<uint64_t>(info.data.address),
+		     static_cast<uint64_t>(info.data.size), info.IsTiled() ? 1 : 0);
+	}
 	if (transfer_bytes == info.bytes_per_block) {
 		if (!info.IsTiled()) {
 			const auto copies = info.BufferCopies(destination_offset);
