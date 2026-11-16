@@ -714,9 +714,6 @@ if(BUILD_TESTING)
 	# Fork: these tests state upstream's CPU-side descriptor walk; the fork's GPU-side reads are on by
 	# default and change what tracking produces, so the tests run with them off.
 	set_tests_properties(scalar_provenance resource_tracking PROPERTIES ENVIRONMENT "KYTY_GPU_SRT=0")
-	# Fork: fails the same way with upstream's sources at 41e2147c ("indirect image materialization
-	# rejected or changed a typed candidate"); enable again when upstream fixes it.
-	set_tests_properties(resource_materialization PROPERTIES DISABLED TRUE)
 	add_test(NAME event_queue_lifetime COMMAND $<TARGET_FILE:event_queue_lifetime_tests>)
 	add_test(NAME kernel_file_system COMMAND $<TARGET_FILE:kernel_file_system_tests>)
 	add_test(NAME sync_on_address COMMAND $<TARGET_FILE:sync_on_address_tests>)
