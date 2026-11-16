@@ -236,6 +236,10 @@ private:
 	// Hash of the bytes each unwatched page had when it was last queued; cleared when a buffer is
 	// created, whose first bytes come from another path.
 	std::unordered_map<uint64_t, uint64_t>            m_bda_unwatched_hash;
+	// Small ranges streamed in the current guest submission: key (address, size, alignment) -> offset.
+	std::unordered_map<uint64_t, uint64_t>            m_stream_memo;
+	uint64_t                                          m_stream_memo_epoch = 0;
+	uint64_t                                          m_stream_memo_last  = 0; // Wraps() the memo is for.
 	// Host view: imported 32 MiB chunks of the guest backing by backing offset, the pages a GPU
 	// write owns, and the pages whose BDA entries need rewriting (guarded by m_bda_sync_mutex).
 	struct HostChunk {
