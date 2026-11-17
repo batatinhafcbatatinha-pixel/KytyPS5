@@ -440,7 +440,7 @@ void BufferCache::JoinOverlap(BufferId new_id, BufferId overlap_id, bool accumul
 }
 
 BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
-	m_bda_hash_generation.fetch_add(1, std::memory_order_release);
+	m_bda_unwatched_hash.clear();
 	const auto end = Common::AlignUp(vaddr + size, CACHING_PAGESIZE);
 	vaddr = Common::AlignDown(vaddr, CACHING_PAGESIZE);
 	size               = end - vaddr;
@@ -1106,79 +1106,64 @@ void BufferCache::QueueBdaSync(uint64_t vaddr, uint64_t size, bool is_write) {
 	m_bda_sync_pending.store(true, std::memory_order_release);
 }
 
-RangeSet BufferCache::ScanUnwatchedPages() {
-	// Shader address reads take CPU bytes only through the BDA queue, which write faults fill.
-	// Pages left unwatched raise none, so each guest submission queues the ones whose bytes
-	// changed. Its submitting thread runs this before queuing it: the CPU writes it reads are done.
-	// The pages are queued (QueueUnwatchedPages) when the GPU thread starts that submission.
-	if (!m_bda_unwatched_any.load(std::memory_order_acquire)) {
-		return {};
-	}
-	std::lock_guard scan_lock(m_bda_scan_mutex);
-	if (const auto generation = m_bda_hash_generation.load(std::memory_order_acquire);
-	    generation != m_bda_hash_seen) {
-		m_bda_hash_seen = generation;
-		m_bda_unwatched_hash.clear();
-	}
-	const auto pages = [this] {
-		std::lock_guard lock(m_bda_sync_mutex);
-		return m_bda_unwatched;
-	}();
-	// KYTY_BDA_HASH=0 queues every unwatched page on every submission. A small set is queued
-	// whole as well: hashing it costs about what uploading it does.
-	static const bool enabled = [] {
-		const char* value = std::getenv("KYTY_BDA_HASH");
-		return value == nullptr || value[0] != '0';
-	}();
-	uint64_t unwatched_bytes = 0;
-	pages.ForEach([&](uint64_t begin, uint64_t end) { unwatched_bytes += end - begin; });
-	const bool compare = enabled && unwatched_bytes >= (uint64_t {4} << 20u);
-	const auto backing_base = LibKernel::Memory::GuestBackingBase();
-	const auto backing_size = LibKernel::Memory::GuestBackingSize();
-	RangeSet   watched;
-	RangeSet   changed;
-	pages.ForEach([&](uint64_t begin, uint64_t end) {
-		for (auto page = begin; page < end; page += TRACKER_PAGE_SIZE) {
-			if (!m_memory_tracker.IsRegionUnwatched(page, TRACKER_PAGE_SIZE)) {
-				watched.Add(page, TRACKER_PAGE_SIZE);
-				m_bda_unwatched_hash.erase(page);
-				continue;
-			}
-			// Most of these pages are not written between two submissions: the upload is
-			// skipped while a page's bytes are the ones queued last.
-			// Hashed in place through the backing view, which no page protection covers.
-			uint64_t backing = 0;
-			if (compare && backing_base != 0 && LibKernel::Memory::GuestBackingOffset(page, &backing) &&
-			    backing + TRACKER_PAGE_SIZE <= backing_size) {
-				const auto hash = XXH3_64bits(reinterpret_cast<const void*>(backing_base + backing),
-				                              TRACKER_PAGE_SIZE);
-				const auto [entry, inserted] = m_bda_unwatched_hash.try_emplace(page, hash);
-				if (!inserted && entry->second == hash) continue;
-				entry->second = hash;
-			}
-			changed.Add(page, TRACKER_PAGE_SIZE);
-		}
-	});
-	std::lock_guard lock(m_bda_sync_mutex);
-	// A page leaves once it is watched again; whatever was written before that is uploaded too.
-	watched.ForEach([&](uint64_t begin, uint64_t end) {
-		m_bda_unwatched.Subtract(begin, end - begin);
-		changed.Add(begin, end - begin);
-	});
-	m_bda_unwatched_any.store(!m_bda_unwatched.Empty(), std::memory_order_release);
-	return changed;
-}
-
-void BufferCache::QueueUnwatchedPages(const RangeSet& pages) {
-	if (pages.Empty()) {
-		return;
-	}
-	std::lock_guard lock(m_bda_sync_mutex);
-	pages.ForEach([&](uint64_t begin, uint64_t end) { m_bda_sync.Add(begin, end - begin); });
-	m_bda_sync_pending.store(true, std::memory_order_release);
-}
-
 void BufferCache::SynchronizeBda(const RangeSet& mapped) {
+	// Shader address reads take CPU bytes only through this queue, which write faults fill. Pages
+	// left unwatched raise none, so they are queued once per guest submission, as their buffer
+	// uploads are, for as long as they stay unwatched.
+	if (m_bda_unwatched_any.load(std::memory_order_acquire) && m_bda_unwatched_epoch != TrackerEpoch()) {
+		m_bda_unwatched_epoch = TrackerEpoch();
+		const auto pages = [this] {
+			std::lock_guard lock(m_bda_sync_mutex);
+			return m_bda_unwatched;
+		}();
+		// KYTY_BDA_HASH=0 queues every unwatched page on every submission. A small set is queued
+		// whole as well: hashing it costs about what uploading it does.
+		static const bool enabled = [] {
+			const char* value = std::getenv("KYTY_BDA_HASH");
+			return value == nullptr || value[0] != '0';
+		}();
+		uint64_t unwatched_bytes = 0;
+		pages.ForEach([&](uint64_t begin, uint64_t end) { unwatched_bytes += end - begin; });
+		const bool compare = enabled && unwatched_bytes >= (uint64_t {4} << 20u);
+		const auto backing_base = LibKernel::Memory::GuestBackingBase();
+		const auto backing_size = LibKernel::Memory::GuestBackingSize();
+		RangeSet   watched;
+		RangeSet   changed;
+		pages.ForEach([&](uint64_t begin, uint64_t end) {
+			for (auto page = begin; page < end; page += TRACKER_PAGE_SIZE) {
+				if (!m_memory_tracker.IsRegionUnwatched(page, TRACKER_PAGE_SIZE)) {
+					watched.Add(page, TRACKER_PAGE_SIZE);
+					m_bda_unwatched_hash.erase(page);
+					continue;
+				}
+				// Most of these pages are not written between two submissions: the upload is
+				// skipped while a page's bytes are the ones queued last.
+				// Hashed in place through the backing view, which no page protection covers.
+				uint64_t backing = 0;
+				if (compare && backing_base != 0 && LibKernel::Memory::GuestBackingOffset(page, &backing) &&
+				    backing + TRACKER_PAGE_SIZE <= backing_size) {
+					const auto hash = XXH3_64bits(reinterpret_cast<const void*>(backing_base + backing),
+					                              TRACKER_PAGE_SIZE);
+					const auto [entry, inserted] = m_bda_unwatched_hash.try_emplace(page, hash);
+					if (!inserted && entry->second == hash) continue;
+					entry->second = hash;
+				}
+				changed.Add(page, TRACKER_PAGE_SIZE);
+			}
+		});
+		std::lock_guard lock(m_bda_sync_mutex);
+		// A page leaves once it is watched again; whatever was written before that is uploaded now.
+		watched.ForEach([&](uint64_t begin, uint64_t end) {
+			m_bda_unwatched.Subtract(begin, end - begin);
+			m_bda_sync.Add(begin, end - begin);
+		});
+		if (!watched.Empty()) m_bda_sync_pending.store(true, std::memory_order_release);
+		changed.ForEach([&](uint64_t begin, uint64_t end) { m_bda_sync.Add(begin, end - begin); });
+		m_bda_unwatched_any.store(!m_bda_unwatched.Empty(), std::memory_order_release);
+		if (!changed.Empty()) {
+			m_bda_sync_pending.store(true, std::memory_order_release);
+		}
+	}
 	if (!m_bda_sync_pending.exchange(false, std::memory_order_acq_rel)) {
 		return;
 	}

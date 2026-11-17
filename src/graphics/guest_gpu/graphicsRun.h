@@ -6,7 +6,6 @@
 #include "common/threads.h"
 #include "common/uniqueFunction.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
-#include "graphics/host_gpu/rangeSet.h"
 
 #include <array>
 #include <atomic>
@@ -60,8 +59,6 @@ private:
 		std::span<const uint32_t> commands;
 		Pm4Execution              execution;
 		bool                      blocked         = false;
-		bool                      resumed         = false; // Processed before, then blocked.
-		RangeSet                  bda_pages; // Unwatched pages it changed, found at submit.
 		uint64_t                  flip_request_id = 0;
 	};
 
