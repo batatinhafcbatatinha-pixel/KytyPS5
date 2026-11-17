@@ -11,12 +11,29 @@ here unchanged. This page only says what this fork changes.
 > not distribute games or copyrighted system software. Use only game files that you have obtained
 > legally.
 
-## Tested
+## title A and title B: 60 fps at 720p
 
-Tested on a Ryzen 5 3600 with an RTX 3050 laptop GPU (8 GB):
+> *title A and title B both run at 60 fps** at 1280x720
+> with this fork, on the same PC: **RTX 3050 laptop GPU (8 GB) + Ryzen 5 3600**. 60 fps is the display's limit.
+> Right picture, no device loss.
 
-- *title A* with the 720p patch: 60 fps.
-- title B with the 720p patch: 60 fps.
+| Game | Scene | 720p | Picture |
+| --- | --- | --- | --- |
+| title A | test scene, Performance mode | **59.8 fps** (two 400 s runs; about 39 fps before this fork's work) | right |
+| title B | first gameplay scene | **59.6 fps** (six 10 s windows, 59.0-59.9) | right |
+
+At the game's default size title A stays at 27.7 fps, where the GPU is the limit; title B with only
+its render size at 720p and the output left at 3840x2160 gives 51.3 fps.
+
+**720p in both games:** put `render-720p-output-720p.json` from
+[recomp-patches](https://github.com/batatinhafcbatatinha-pixel/recomp-patches) (`ps5/TITLE_ID/` or `ps5/TITLE_ID/`)
+through that repository's `python tools/recomp_patch.py kyty <patch.json> <out.json>` and start the game with `--game-patch <out.json>`.
+In title A choose **Performance** in the graphics settings first: the patch replaces that mode's sizes.
+The patches hold addresses and values only (no game code); the emulator writes them into the loaded module, and
+"held" values are written again whenever the game writes its own. A 1080p variant exists for both games.
+
+The same renderer now also drives [AnyPS5](https://github.com/batatinhafcbatatinha-pixel/AnyPS5)'s new GPU engine,
+where the game code runs natively.
 
 ## What differs from upstream
 
