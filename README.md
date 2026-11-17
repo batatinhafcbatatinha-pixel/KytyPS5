@@ -37,39 +37,35 @@ where the game code runs natively.
 
 ## What differs from upstream
 
-The fork follows upstream `main` (merged regularly; last merge at upstream `15c8c618`) and adds
-work on frame rate for title B and title A. All of it is on by default
-and each part has a switch.
+The fork follows upstream `main` (merged regularly; last merge at upstream `15c8c618`). Everything it adds is about
+frame rate in title B and title A, is on by default, and can be turned off where a switch is named.
 
-| Change | What it does | Switch |
-| --- | --- | --- |
-| Early compute on a second queue | A compute program whose output later shaders read back is learned at run time and its dispatches run on a second Vulkan queue, ahead of the work already queued, when a per-dispatch check finds no pending write to its inputs and no queued read of its outputs. This removes most of the GPU thread's read-back waits. | `KYTY_EARLY_COMPUTE=0` turns it off |
-| GPU-side descriptor reads for learned programs | Disabled since the merge of upstream `3acafb35`: upstream reworked the image heap these variants looked their textures up in, and the fork's lookup table was not carried over (its measured ceiling in title B was below 1 ms per frame). The shader-side code is still in the tree. | none |
-| Walker page faults avoided | The descriptor walker reads pages that faulted recently through a checked load from the unprotected backing memory, without raising an exception. | none |
-| Texture descriptions reused | The size, tiling layout and view information of a texture binding are kept per descriptor instead of being recomputed for every binding. | none |
-| Rewritten pages left unwatched | A buffer page that the game writes again after its upload is no longer write-protected. It is uploaded once per guest command submission instead, which saves a page fault and two protection changes per write. A GPU write ends this for the page, and the set is rebuilt every 64 frames, so a page the game stopped writing stops being uploaded. | `KYTY_REWRITTEN_FRAMES=n` sets the period |
-| Unchanged rewritten pages not uploaded again | Shader address reads see CPU bytes only through uploads, so the unwatched pages above were uploaded for them on every submission. When that set is 4 MiB or more, each page is hashed first and uploaded only when its bytes changed since the last time. | `KYTY_BDA_HASH=0` uploads them always |
-| Image backings reused | A deleted image's Vulkan image and memory are kept for up to 2 s (128 MiB at most) and handed to the next image created with the same parameters, once the GPU is done with them. A surface used alternately as depth and as colour (title A's shadow cube and atlas) no longer creates and frees four images per frame. | none |
-| Submit worker | The GPU thread's `vkQueueSubmit` calls run on a worker thread in submission order. A wait on a queued batch submits it on the waiting thread. | `KYTY_ASYNC_SUBMIT=0` submits on the GPU thread |
-| Compute fills as image clears, more shapes | Upstream turns a compute dispatch that stores one uniform value over the whole memory of an image into a clear of that image. The shape analysis now also accepts a fill that stops at a run-time element count, stores raw dwords, and picks its word from a few run-time words; the fill counts as uniform when those words are equal at dispatch time. Anything else runs as before. title B clears its render targets this way every frame, and each one was re-uploaded through the detiler afterwards. | none |
-| Compute copies of whole images as image copies | The same shape analysis recognises a compute program that stores, at each element index up to a run-time count, the dword it loads from another buffer at that index. When a dispatch of it covers exactly the memory of one image, reads exactly the memory of another image of the same layout (format, size, levels, tiling), and the source's newest contents are in its image, the two images are copied on the GPU; the source is no longer read back, the program does not run, and the destination is not re-uploaded. Anything else runs as before. title B copies several of its render targets this way every frame. | none |
-| Read-back fixes | GPU-written image data is kept across eviction and raw reads; read-back downloads start when their batch is submitted. | none |
-| Held values in game patches | A `--game-patch` memory entry may carry `"hold": true`. Such an entry is not checked or written at load: a thread replaces its `off` bytes by its `on` bytes whenever the game writes them, for values a game computes into its own data after start (a render size, for instance). | per entry |
-| Device-loss report | Every failed Vulkan wait or submit prints one `[device-loss]` line with free RAM, commit charge and video memory usage and budget. | none |
+- **Compute work runs ahead on a second GPU queue.** Programs whose results are read back later run early, so the
+  GPU thread rarely waits for them. Off: `KYTY_EARLY_COMPUTE=0`.
+- **Pages the game rewrites all the time stop being watched.** They are uploaded once per frame batch instead of
+  faulting on every write, and only when their bytes really changed. Switches: `KYTY_REWRITTEN_FRAMES=n` (how often
+  the list is rebuilt), `KYTY_BDA_HASH=0` (always upload).
+- **GPU images are reused.** A deleted image is kept for up to 2 s and handed to the next one of the same shape, so
+  *title A*'s shadow maps no longer create and free four images per frame.
+- **Texture descriptions are cached** instead of recomputed for every binding, and the descriptor reader avoids page
+  faults on pages it just touched.
+- **`vkQueueSubmit` runs on its own thread.** Off: `KYTY_ASYNC_SUBMIT=0`.
+- **More compute work becomes plain GPU clears and copies.** Fills and whole-image copies that title B runs every
+  frame are recognised and done as image clears and copies, without reading the data back.
+- **Read-back fixes:** GPU-written image data is kept, and downloads start as soon as their batch is submitted.
+- **Held values in game patches:** a `--game-patch` entry with `"hold": true` is written again whenever the game
+  writes its own value (used by the resolution patches in
+  [recomp-patches](https://github.com/batatinhafcbatatinha-pixel/recomp-patches)).
+- **Device-loss report:** every failed Vulkan wait or submit prints one `[device-loss]` line with memory usage.
 
-Known open point in *title A*: in about half of the runs of every build, including builds without any of this
-work, the "Security Notice" sign in the bank stays dim for the whole run. The cause is not found yet.
+Open points:
 
-Known open point: 3 of 20 runs with the second queue lost the GPU device, all within one hour in
-which the machine was short of memory and disk; none since. If it happens, the `[device-loss]`
-line in the log says whether memory was the cause, and `KYTY_EARLY_COMPUTE=0` returns to one queue.
-
-The render-resolution patches are in
-[recomp-patches](https://github.com/batatinhafcbatatinha-pixel/recomp-patches) (`ps5/TITLE_ID/`)
-and are loaded with upstream's `--game-patch` option.
-
-Parked code: the shader-side part of an earlier attempt to move descriptor reads to the GPU is still in
-the tree and cannot be switched on (`KYTY_GPU_SRT` and `KYTY_GPU_SRT_LEARN` no longer select it).
+- *title A*: in about half of the runs of every build (also without this work) the "Security Notice" sign in the bank
+  stays dim. Cause not found yet.
+- 3 of 20 runs with the second queue lost the GPU device, all in one hour when the PC was short of memory; none
+  since. The `[device-loss]` line tells whether memory was the cause; `KYTY_EARLY_COMPUTE=0` goes back to one queue.
+- An older attempt at reading descriptors on the GPU is still in the tree but switched off (it no longer fits
+  upstream's reworked image heap).
 
 ## Building and running
 
