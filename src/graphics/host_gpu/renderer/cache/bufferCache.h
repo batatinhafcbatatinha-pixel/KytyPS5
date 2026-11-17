@@ -96,6 +96,10 @@ public:
 	void               ProcessFaultBuffer();
 	// Uploads the CPU-dirty bytes of the queued ranges `mapped` covers behind one barrier pair.
 	void SynchronizeBda(const RangeSet& mapped);
+	// The unwatched pages whose bytes changed since the last scan (thread-safe); a submission
+	// queues them for the BDA upload when its processing starts.
+	[[nodiscard]] RangeSet ScanUnwatchedPages();
+	void                   QueueUnwatchedPages(const RangeSet& pages);
 	// Queue after the range's state change becomes visible, or a drain could consume it first.
 	// is_write: a CPU write (the host view keeps the cache-buffer copy mapped and refreshes it).
 	void               QueueBdaSync(uint64_t vaddr, uint64_t size, bool is_write = false);
@@ -232,10 +236,12 @@ private:
 	// (guarded by m_bda_sync_mutex).
 	RangeSet                                          m_bda_unwatched;
 	std::atomic<bool>                                 m_bda_unwatched_any {false};
-	uint64_t                                          m_bda_unwatched_epoch = 0;
-	// Hash of the bytes each unwatched page had when it was last queued; cleared when a buffer is
-	// created, whose first bytes come from another path.
+	// Hash of the bytes each unwatched page had when it was last queued (guarded by
+	// m_bda_scan_mutex); cleared when a buffer is created, whose first bytes come from another path.
+	std::mutex                                        m_bda_scan_mutex;
 	std::unordered_map<uint64_t, uint64_t>            m_bda_unwatched_hash;
+	std::atomic<uint64_t>                             m_bda_hash_generation {0};
+	uint64_t                                          m_bda_hash_seen = 0;
 	// Small ranges streamed in the current guest submission: key (address, size, alignment) -> offset.
 	std::unordered_map<uint64_t, uint64_t>            m_stream_memo;
 	uint64_t                                          m_stream_memo_epoch = 0;

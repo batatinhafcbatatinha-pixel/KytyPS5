@@ -30,6 +30,7 @@
 #include <mutex>
 #include <semaphore>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace Libs::Graphics {
@@ -388,6 +389,10 @@ void CommandProcessor::DmaData(uint8_t dst_sel, uint64_t dst_address_or_offset, 
 }
 
 void GuestGpu::Enqueue(Submission submission) {
+	if (submission.type == SubmissionType::Commands) {
+		// Off the GPU thread: the commands' CPU writes are done once they are submitted.
+		submission.bda_pages = m_renderer.GetBufferCache().ScanUnwatchedPages();
+	}
 	Common::LockGuard lock(m_queue_mutex);
 	EXIT_IF(!m_accepting);
 	m_queues[submission.queue_id].push_back(std::move(submission));
@@ -486,6 +491,7 @@ void GuestGpu::ThreadRun(void* data) {
 		Common::LockGuard lock(gpu->m_queue_mutex);
 		if (!complete) {
 			submission.blocked = true;
+			submission.resumed = true;
 			gpu->m_queues[submission.queue_id].push_front(std::move(submission));
 			gpu->m_submission_count++;
 		} else {
@@ -511,6 +517,11 @@ bool GuestGpu::Process(Submission& submission) {
 	switch (submission.type) {
 		case SubmissionType::Commands:
 			AdvanceTrackerEpoch();
+			// Uploaded before its first BDA draw. CPU writes made while it waited are read by
+			// its remaining commands.
+			m_renderer.GetBufferCache().QueueUnwatchedPages(
+			    submission.resumed ? m_renderer.GetBufferCache().ScanUnwatchedPages()
+			                       : std::exchange(submission.bda_pages, {}));
 			complete =
 			    cp.Process(submission.execution, submission.commands) == Pm4ProcessResult::Complete;
 			if (submission.execution.MadeProgress()) {
