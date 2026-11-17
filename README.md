@@ -16,7 +16,7 @@ here unchanged. This page only says what this fork changes.
 Tested on a Ryzen 5 3600 with an RTX 3050 laptop GPU (8 GB):
 
 - *title A* with the 720p patch: 60 fps.
-- title B with the 720p patch: about 50 fps.
+- title B with the 720p patch: 60 fps.
 
 ## What differs from upstream
 
