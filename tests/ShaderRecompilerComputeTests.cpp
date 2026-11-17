@@ -2487,8 +2487,8 @@ public:
       return true;
     };
 
-    // Black, 100-nit and 250-nit gray, then a color; every source alpha is zero. Flags: PQ
-    // source (4), linear source (8), opaque main bus (16).
+    // Black, 100-nit and 250-nit gray, then a color; every source alpha is zero. Flags:
+    // premultiplied (1), HDR target (2), PQ source (4), linear source (8), opaque main bus (16).
     const auto pq = [](u32 r, u32 g, u32 b) { return r | (g << 10u) | (b << 20u); };
     auto pq_source = CreateImage2D(
         name, 4, 1, vk::Format::eA2B10G10R10UnormPack32, vk::ImageUsageFlagBits::eSampled,
@@ -2507,7 +2507,36 @@ public:
             pixelsMatch(render(nit_source, 4u | 8u | 16u),
                         {0xff000000u, 0xffaaaaaau, 0xfff0f0f0u, 0xff669ce4u}),
             "linear-nit pixels were not converted to opaque sRGB");
+    Require(name, "linear-nit HDR target",
+            pixelsMatch(render(nit_source, 2u | 4u | 8u | 16u),
+                        {0xff000000u, 0xff828282u, 0xff9a9a9au, 0xff6b7f8cu}),
+            "linear-nit pixels were not converted to opaque HDR10 PQ");
 
+    // Linear SDR with alpha 0x80.
+    auto sdr_source = CreateImage2D(
+        name, 4, 1, vk::Format::eR8G8B8A8Unorm, vk::ImageUsageFlagBits::eSampled,
+        {0x80000000u, 0x80808080u, 0x80ffffffu, 0x804080c0u}, 1,
+        vk::ImageLayout::eShaderReadOnlyOptimal);
+    Require(name, "SDR linear source",
+            pixelsMatch(render(sdr_source, 8u | 16u),
+                        {0xff000000u, 0xffbcbcbcu, 0xffffffffu, 0xff89bce1u}),
+            "SDR linear pixels were not converted to opaque sRGB");
+    Require(name, "premultiplied SDR linear source",
+            pixelsMatch(render(sdr_source, 1u | 8u),
+                        {0x80000000u, 0x80808080u, 0x80808080u, 0x805e8080u}),
+            "premultiplied linear pixels were not converted to premultiplied sRGB");
+    // PQ with alpha 1/3 and color up to three times the alpha.
+    auto bright_pq_source = CreateImage2D(
+        name, 4, 1, vk::Format::eA2B10G10R10UnormPack32, vk::ImageUsageFlagBits::eSampled,
+        {1u << 30u, pq(341, 341, 341) | 1u << 30u, pq(716, 716, 716) | 1u << 30u,
+         pq(1023, 1023, 1023) | 1u << 30u}, 1, vk::ImageLayout::eShaderReadOnlyOptimal);
+    Require(name, "premultiplied PQ above alpha",
+            pixelsMatch(render(bright_pq_source, 1u | 4u),
+                        {0x55000000u, 0x55555555u, 0x55555555u, 0x55555555u}),
+            "premultiplied PQ pixels above alpha did not saturate to SDR white");
+
+    DestroyImage(&bright_pq_source);
+    DestroyImage(&sdr_source);
     DestroyImage(&nit_source);
     DestroyImage(&pq_source);
     DestroyImage(&target);
@@ -29568,6 +29597,30 @@ TestCase VectorBfeI32SignExtendsField() {
   return test;
 }
 
+TestCase VectorMsadU8SkipsZeroReferenceBytes() {
+  using O = ShaderOpcode;
+
+  std::vector<u32> code;
+  for (u32 vgpr = 0; vgpr < 3; vgpr++) {
+    AppendVMovU32(&code, 30, vgpr * sizeof(u32));
+    AppendBufferLoadDword(&code, vgpr, 30);
+  }
+  AppendVop3(&code, 0x171, 10, Vgpr(0), Vgpr(1), Vgpr(2));
+  AppendStoreVgpr(&code, 10, 0);
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "VectorMsadU8SkipsZeroReferenceBytes";
+  test.code = std::move(code);
+  // Byte differences 0x10, 0xfe and 0xdf in both directions; byte 0 has a zero
+  // reference and is skipped. The accumulation wraps at 32 bits.
+  test.initial = {0x10ff2080u, 0x2001ff00u, 0xfffffff0u};
+  test.expected = {0x1ddu};
+  test.opcodes = {O::V_MOV_B32, O::BUFFER_LOAD_DWORD, O::V_MSAD_U8,
+                  O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  return test;
+}
+
 TestCase VectorBfmDropsMaskBitsPastBit31() {
   using O = ShaderOpcode;
 
@@ -49177,6 +49230,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(VectorVop3LshlrevB64Captured);
   AddCase(VectorVop3IntegerOps);
   AddCase(VectorBfeI32SignExtendsField);
+  AddCase(VectorMsadU8SkipsZeroReferenceBytes);
   AddCase(VectorBfmDropsMaskBitsPastBit31);
   AddCase(VectorAlignByteUsesTwoBitByteOffset);
   AddCase(VectorPermSelectsBytesSignsAndFills);
@@ -57317,6 +57371,7 @@ int main(int argc, char **argv) {
     VulkanHarness vulkan;
     RunCase(&vulkan, VectorAlignByteUsesTwoBitByteOffset());
     RunCase(&vulkan, VectorVop3IntegerOps());
+    RunCase(&vulkan, VectorMsadU8SkipsZeroReferenceBytes());
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--mad-f32-only") == 0) {
