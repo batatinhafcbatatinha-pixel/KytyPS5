@@ -13,8 +13,8 @@ here unchanged. This page only says what this fork changes.
 
 ## What differs from upstream
 
-The fork follows upstream `main` (merged regularly; last merge at upstream `41e2147c`) and adds
-work on frame rate, measured on *Control Ultimate Edition* (PPSA01949). All of it is on by default
+The fork follows upstream `main` (merged regularly; last merge at upstream `15c8c618`) and adds
+work on frame rate, measured on *Control Ultimate Edition* (PPSA01949) and *Grand Theft Auto V* (PPSA04264). All of it is on by default
 and each part has a switch.
 
 | Change | What it does | Switch |
@@ -25,6 +25,7 @@ and each part has a switch.
 | Texture descriptions reused | The size, tiling layout and view information of a texture binding are kept per descriptor instead of being recomputed for every binding. | none |
 | Rewritten pages left unwatched | A buffer page that the game writes again after its upload is no longer write-protected. It is uploaded once per guest command submission instead, which saves a page fault and two protection changes per write. A GPU write ends this for the page, and the set is rebuilt every 64 frames, so a page the game stopped writing stops being uploaded. | `KYTY_REWRITTEN_FRAMES=n` sets the period |
 | Unchanged rewritten pages not uploaded again | Shader address reads see CPU bytes only through uploads, so the unwatched pages above were uploaded for them on every submission. When that set is 4 MiB or more, each page is hashed first and uploaded only when its bytes changed since the last time. | `KYTY_BDA_HASH=0` uploads them always |
+| Image backings reused | A deleted image's Vulkan image and memory are kept for up to 2 s (128 MiB at most) and handed to the next image created with the same parameters, once the GPU is done with them. A surface used alternately as depth and as colour (GTA V's shadow cube and atlas) no longer creates and frees four images per frame. | none |
 | Submit worker | The GPU thread's `vkQueueSubmit` calls run on a worker thread in submission order. A wait on a queued batch submits it on the waiting thread. | `KYTY_ASYNC_SUBMIT=0` submits on the GPU thread |
 | Compute fills as image clears, more shapes | Upstream turns a compute dispatch that stores one uniform value over the whole memory of an image into a clear of that image. The shape analysis now also accepts a fill that stops at a run-time element count, stores raw dwords, and picks its word from a few run-time words; the fill counts as uniform when those words are equal at dispatch time. Anything else runs as before. *Control* clears its render targets this way every frame, and each one was re-uploaded through the detiler afterwards. | none |
 | Compute copies of whole images as image copies | The same shape analysis recognises a compute program that stores, at each element index up to a run-time count, the dword it loads from another buffer at that index. When a dispatch of it covers exactly the memory of one image, reads exactly the memory of another image of the same layout (format, size, levels, tiling), and the source's newest contents are in its image, the two images are copied on the GPU; the source is no longer read back, the program does not run, and the destination is not re-uploaded. Anything else runs as before. *Control* copies several of its render targets this way every frame. | none |
@@ -41,6 +42,14 @@ by about 1.5 fps on this machine, and other scenes, resolutions and games were n
 The next batch (unwatched rewritten pages and the submit worker) lowers the frame time by 0.34 ms
 in the same kind of in-run comparison; its clean run showed 50.3 fps. Most of its effect is CPU
 time on the game threads (about 140 ms of page-fault handling per second less), not frame rate.
+
+Measured on 2026-11-17 in the bank scene of the *GTA V* prologue at 1280x720 (same machine, 400 s runs):
+image-backing reuse raises it from 51.1 to 55.3 fps in an in-run comparison, and together with the hashing of
+rewritten pages the scene holds the 60 fps cap (59.8 fps in two runs). At the game's default size it stays at
+27.7 fps, where the GPU is the limit.
+
+Known open point in *GTA V*: in about half of the runs of every build, including builds without any of this
+work, the "Security Notice" sign in the bank stays dim for the whole run. The cause is not found yet.
 
 Known open point: 3 of 20 runs with the second queue lost the GPU device, all within one hour in
 which the machine was short of memory and disk; none since. If it happens, the `[device-loss]`
