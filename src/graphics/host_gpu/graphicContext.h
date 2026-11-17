@@ -164,6 +164,7 @@ struct VulkanImage {
 	VulkanImageState              state;
 	std::vector<VulkanImageState> subresource_states;
 	VmaAllocation                allocation = nullptr;
+	bool                          recyclable = false; // Created with the parameters the backing pool keys.
 };
 
 
