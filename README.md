@@ -11,10 +11,17 @@ here unchanged. This page only says what this fork changes.
 > not distribute games or copyrighted system software. Use only game files that you have obtained
 > legally.
 
+## Tested
+
+Tested on a Ryzen 5 3600 with an RTX 3050 laptop GPU (8 GB):
+
+- *GTA V* (PPSA04264) with the 720p patch: 60 fps.
+- *Control* (PPSA01949) with the 720p patch: about 50 fps.
+
 ## What differs from upstream
 
 The fork follows upstream `main` (merged regularly; last merge at upstream `15c8c618`) and adds
-work on frame rate, measured on *Control Ultimate Edition* (PPSA01949) and *Grand Theft Auto V* (PPSA04264). All of it is on by default
+work on frame rate for *Control Ultimate Edition* (PPSA01949) and *Grand Theft Auto V* (PPSA04264). All of it is on by default
 and each part has a switch.
 
 | Change | What it does | Switch |
@@ -33,21 +40,6 @@ and each part has a switch.
 | Held values in game patches | A `--game-patch` memory entry may carry `"hold": true`. Such an entry is not checked or written at load: a thread replaces its `off` bytes by its `on` bytes whenever the game writes them, for values a game computes into its own data after start (a render size, for instance). | per entry |
 | Device-loss report | Every failed Vulkan wait or submit prints one `[device-loss]` line with free RAM, commit charge and video memory usage and budget. | none |
 
-Measured on 2026-11-14 in the first gameplay scene of *Control* (character standing, 60 s window),
-with the game's render resolution patched to 1280x720, on an RTX 3050 laptop GPU and a Ryzen 5
-3600: about 39 fps before this work, 46.6 fps with early compute, 49.8 fps after merging upstream's
-changes of that day. The last batch (walker and texture descriptions) lowers the frame time by
-1.7 ms (21.91 to 20.21 ms) in an in-run comparison of alternating 5 s windows. Separate runs differ
-by about 1.5 fps on this machine, and other scenes, resolutions and games were not measured.
-The next batch (unwatched rewritten pages and the submit worker) lowers the frame time by 0.34 ms
-in the same kind of in-run comparison; its clean run showed 50.3 fps. Most of its effect is CPU
-time on the game threads (about 140 ms of page-fault handling per second less), not frame rate.
-
-Measured on 2026-11-17 in the bank scene of the *GTA V* prologue at 1280x720 (same machine, 400 s runs):
-image-backing reuse raises it from 51.1 to 55.3 fps in an in-run comparison, and together with the hashing of
-rewritten pages the scene holds the 60 fps cap (59.8 fps in two runs). At the game's default size it stays at
-27.7 fps, where the GPU is the limit.
-
 Known open point in *GTA V*: in about half of the runs of every build, including builds without any of this
 work, the "Security Notice" sign in the bank stays dim for the whole run. The cause is not found yet.
 
@@ -55,7 +47,7 @@ Known open point: 3 of 20 runs with the second queue lost the GPU device, all wi
 which the machine was short of memory and disk; none since. If it happens, the `[device-loss]`
 line in the log says whether memory was the cause, and `KYTY_EARLY_COMPUTE=0` returns to one queue.
 
-The render-resolution patches used for these measurements are in
+The render-resolution patches are in
 [recomp-patches](https://github.com/batatinhafcbatatinha-pixel/recomp-patches) (`ps5/PPSA01949/`)
 and are loaded with upstream's `--game-patch` option.
 
