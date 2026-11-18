@@ -16,11 +16,12 @@ here unchanged. This page only says what this fork changes.
 > *title B runs at 60 fps** at 1280x720 with this fork on an **RTX 3050 laptop GPU
 > (8 GB) + Ryzen 5 3600**. 60 fps is the display's limit. Right picture, no device loss.
 
-| Game | Scene | 720p | Picture |
-| --- | --- | --- | --- |
-| title B | first gameplay scene | **59.6 fps** (six 10 s windows, 59.0-59.9) | right |
+![In-game fps of title B: 59.6 fps at 720p, 51.3 fps with 4K output](docs/fps/fps-control.svg)
 
-With only its render size at 720p and the output left at 3840x2160 it gives 51.3 fps.
+First gameplay scene, six 10 s windows (59.0-59.9 fps). With only its render size at 720p and the output left at
+3840x2160 it gives 51.3 fps. Right picture in both.
+
+**[See more games →](docs/games.md)** (Control and title A)
 
 **720p:** put `render-720p-output-720p.json` from
 [recomp-patches](https://github.com/batatinhafcbatatinha-pixel/recomp-patches) (`ps5/TITLE_ID/`)
