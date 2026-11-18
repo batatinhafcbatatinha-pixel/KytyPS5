@@ -21,7 +21,7 @@ here unchanged. This page only says what this fork changes.
 First gameplay scene, six 10 s windows (59.0-59.9 fps). With only its render size at 720p and the output left at
 3840x2160 it gives 51.3 fps. Right picture in both.
 
-**[See more games →](docs/games.md)** (Control and Grand Theft Auto V)
+**[See more games →](docs/games.md)**
 
 **720p:** put `render-720p-output-720p.json` from
 [recomp-patches](https://github.com/batatinhafcbatatinha-pixel/recomp-patches) (`ps5/PPSA01949/`)
