@@ -602,7 +602,7 @@ void TestAddContent(const std::filesystem::path& root) {
               info[i].package_type == 3 && info[i].download_status == 4 &&
               get(1, &info[i].label, &single) == OK &&
               std::memcmp(&single, &info[i], sizeof(single)) == 0,
-          "title A entitlements retain their order, metadata, and individual lookups");
+          "title entitlements retain their order, metadata, and individual lookups");
   }
   Check(std::strcmp(info[3].label.data, label(0).c_str()) == 0 &&
             info[3].package_type == 2 && info[3].download_status == 4 &&
@@ -684,11 +684,11 @@ void TestAddContent(const std::filesystem::path& root) {
 
   Loader::AddContentLoad(folder / "missing", {}, "PPSA11111");
   Check(list(0, info.data(), 4, &count) == OK && count == 3,
-        "missing add-ons folder retains title A entitlements");
+        "missing add-ons folder retains title entitlements");
   for (size_t i = 0; i < existing.size(); ++i) {
     Check(std::strcmp(info[i].label.data, existing[i]) == 0 &&
               get(0, &info[i].label, &single) == OK,
-          "title A entitlement lookup works without detected add-ons");
+          "title entitlement lookup works without detected add-ons");
   }
 }
 

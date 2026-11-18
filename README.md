@@ -11,26 +11,22 @@ here unchanged. This page only says what this fork changes.
 > not distribute games or copyrighted system software. Use only game files that you have obtained
 > legally.
 
-## title A and title B: 60 fps at 720p
+## Control: 60 fps at 720p
 
-> *title A and title B both run at 60 fps** at 1280x720
-> with this fork, on the same PC: **RTX 3050 laptop GPU (8 GB) + Ryzen 5 3600**. 60 fps is the display's limit.
-> Right picture, no device loss.
+> *title B runs at 60 fps** at 1280x720 with this fork on an **RTX 3050 laptop GPU
+> (8 GB) + Ryzen 5 3600**. 60 fps is the display's limit. Right picture, no device loss.
 
 | Game | Scene | 720p | Picture |
 | --- | --- | --- | --- |
-| title A | test scene, Performance mode | **59.8 fps** (two 400 s runs; about 39 fps before this fork's work) | right |
 | title B | first gameplay scene | **59.6 fps** (six 10 s windows, 59.0-59.9) | right |
 
-At the game's default size title A stays at 27.7 fps, where the GPU is the limit; title B with only
-its render size at 720p and the output left at 3840x2160 gives 51.3 fps.
+With only its render size at 720p and the output left at 3840x2160 it gives 51.3 fps.
 
-**720p in both games:** put `render-720p-output-720p.json` from
-[recomp-patches](https://github.com/batatinhafcbatatinha-pixel/recomp-patches) (`ps5/TITLE_ID/` or `ps5/TITLE_ID/`)
+**720p:** put `render-720p-output-720p.json` from
+[recomp-patches](https://github.com/batatinhafcbatatinha-pixel/recomp-patches) (`ps5/TITLE_ID/`)
 through that repository's `python tools/recomp_patch.py kyty <patch.json> <out.json>` and start the game with `--game-patch <out.json>`.
-In title A choose **Performance** in the graphics settings first: the patch replaces that mode's sizes.
 The patches hold addresses and values only (no game code); the emulator writes them into the loaded module, and
-"held" values are written again whenever the game writes its own. A 1080p variant exists for both games.
+"held" values are written again whenever the game writes its own. A 1080p variant exists too.
 
 The same renderer now also drives [AnyPS5](https://github.com/batatinhafcbatatinha-pixel/AnyPS5)'s new GPU engine,
 where the game code runs natively.
@@ -38,7 +34,7 @@ where the game code runs natively.
 ## What differs from upstream
 
 The fork follows upstream `main` (merged regularly; last merge at upstream `15c8c618`). Everything it adds is about
-frame rate in title B and title A, is on by default, and can be turned off where a switch is named.
+frame rate, is on by default, and can be turned off where a switch is named.
 
 - **Compute work runs ahead on a second GPU queue.** Programs whose results are read back later run early, so the
   GPU thread rarely waits for them. Off: `KYTY_EARLY_COMPUTE=0`.
@@ -46,7 +42,7 @@ frame rate in title B and title A, is on by default, and can be turned off where
   faulting on every write, and only when their bytes really changed. Switches: `KYTY_REWRITTEN_FRAMES=n` (how often
   the list is rebuilt), `KYTY_BDA_HASH=0` (always upload).
 - **GPU images are reused.** A deleted image is kept for up to 2 s and handed to the next one of the same shape, so
-  *title A*'s shadow maps no longer create and free four images per frame.
+  shadow maps no longer create and free four images per frame.
 - **Texture descriptions are cached** instead of recomputed for every binding, and the descriptor reader avoids page
   faults on pages it just touched.
 - **`vkQueueSubmit` runs on its own thread.** Off: `KYTY_ASYNC_SUBMIT=0`.
@@ -60,8 +56,6 @@ frame rate in title B and title A, is on by default, and can be turned off where
 
 Open points:
 
-- *title A*: in about half of the runs of every build (also without this work) the "Security Notice" sign in the bank
-  stays dim. Cause not found yet.
 - 3 of 20 runs with the second queue lost the GPU device, all in one hour when the PC was short of memory; none
   since. The `[device-loss]` line tells whether memory was the cause; `KYTY_EARLY_COMPUTE=0` goes back to one queue.
 - An older attempt at reading descriptors on the GPU is still in the tree but switched off (it no longer fits
