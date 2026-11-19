@@ -101,6 +101,7 @@ struct ConfigOptions {
 	bool                   occlusion_queries_enabled   = false;
 	bool                   relaxed_shader_float        = false;
 	bool                   native_rt                   = false;
+	bool                   ignore_flip_rate            = false;
 	bool                   lod_stats_enabled           = false;
 	bool                   trophy_enabled              = true;
 	uint32_t               trophy_duration_seconds     = 6;
@@ -182,6 +183,8 @@ bool TessellationEnabled();
 bool OcclusionQueriesEnabled();
 bool RelaxedShaderFloatEnabled();
 bool NativeRtEnabled();
+// Flips as soon as a frame is ready instead of every flip_rate + 1 vblanks.
+bool IgnoreFlipRate();
 bool LodStatsEnabled();
 bool TrophyEnabled();
 uint32_t GetTrophyDurationSeconds();
