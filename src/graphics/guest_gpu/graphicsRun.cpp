@@ -903,8 +903,12 @@ void CommandProcessor::ProcessPssr(const Pssr::Request& request) {
 void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 	EXIT_NOT_IMPLEMENTED(args_addr == 0 || (args_addr & 3u) != 0);
 	if ((mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0) {
-		const auto* args = reinterpret_cast<const vk::DispatchIndirectCommand*>(args_addr);
-		DispatchDirect(args->x, args->y, args->z, mode);
+		// The arguments may be GPU-written: read them through the cache, not guest memory.
+		vk::DispatchIndirectCommand args {};
+		if (!m_renderer.GetBufferCache().ReadTable(args_addr, sizeof(args), &args)) {
+			EXIT("dispatch arguments at 0x%016" PRIx64 " are not readable\n", args_addr);
+		}
+		DispatchDirect(args.x, args.y, args.z, mode);
 		return;
 	}
 	SubmitReadBackWrites(m_renderer);
