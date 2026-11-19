@@ -18,6 +18,7 @@
 #include "graphics/host_gpu/renderer/rayTracing.h"
 #include "kernel/eventQueue.h"
 
+#include <atomic>
 #include <memory>
 #include <shared_mutex>
 #include <vector>
@@ -60,6 +61,10 @@ public:
 	[[nodiscard]] bool IsMapped(uint64_t vaddr, uint64_t size) const noexcept;
 	void               MapMemory(uint64_t vaddr, uint64_t size);
 	void               UnmapMemory(uint64_t vaddr, uint64_t size);
+	// Changes whenever the mapped ranges do.
+	[[nodiscard]] uint64_t MapGeneration() const noexcept {
+		return m_map_generation.load(std::memory_order_acquire);
+	}
 	void               PrepareBda();
 	void               RunGarbageCollector();
 
@@ -90,6 +95,7 @@ private:
 	OcclusionQueries          m_occlusion_queries;
 	mutable std::shared_mutex m_mapped_ranges_mutex;
 	RangeSet                  m_mapped_ranges;
+	std::atomic<uint64_t>     m_map_generation {0};
 	std::unique_ptr<GuestGpu> m_gpu;
 	VideoOut::VideoOutDriver* m_video_out = nullptr;
 	bool                      m_fault_process_pending = false;
