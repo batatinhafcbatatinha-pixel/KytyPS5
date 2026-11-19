@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <array>
 #include <atomic>
+#include <fmt/format.h>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -386,6 +387,21 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 		thread_group_x = input_info.workgroup_counts[0];
 		thread_group_y = input_info.workgroup_counts[1];
 		thread_group_z = input_info.workgroup_counts[2];
+	}
+	// Group counts beyond the device limits come from garbage arguments; the host GPU would run
+	// them until the OS resets it.
+	if (const auto& limits = m_context.GetGraphics().GetPhysicalDeviceProperties().limits;
+	    thread_group_x > limits.maxComputeWorkGroupCount[0] ||
+	    thread_group_y > limits.maxComputeWorkGroupCount[1] ||
+	    thread_group_z > limits.maxComputeWorkGroupCount[2]) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "Dispatch skipped: {}x{}x{} groups exceed the device limits (program {:016x})\n",
+			    thread_group_x, thread_group_y, thread_group_z, program.shader_hash));
+		}
+		ResetBindings();
+		return;
 	}
 
 	buffer.EndRendering();
