@@ -519,9 +519,11 @@ bool GuestGpu::Process(Submission& submission) {
 			AdvanceTrackerEpoch();
 			// Uploaded before its first BDA draw. CPU writes made while it waited are read by
 			// its remaining commands.
-			m_renderer.GetBufferCache().QueueUnwatchedPages(
-			    submission.resumed ? m_renderer.GetBufferCache().ScanUnwatchedPages()
-			                       : std::exchange(submission.bda_pages, {}));
+			if (submission.resumed) {
+				m_renderer.GetBufferCache().RequestUnwatchedRescan();
+			} else {
+				m_renderer.GetBufferCache().QueueUnwatchedPages(std::exchange(submission.bda_pages, {}));
+			}
 			complete =
 			    cp.Process(submission.execution, submission.commands) == Pm4ProcessResult::Complete;
 			if (submission.execution.MadeProgress()) {
