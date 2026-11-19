@@ -75,6 +75,8 @@ static void PrintUsage() {
 	::printf("  --relaxed-shader-float               Native GPU float ops in shaders; faster, can be inaccurate.\n");
 	::printf("  --native-rt                          Use native RT on the GPU.\n");
 	::printf("  --ignore-flip-rate                   Flip at every vblank even when the game asks for 30 or 20 fps.\n");
+	::printf("  --gpu-crash-diagnostics              On a GPU device loss, report the fault and the last\n"
+	         "                                       draws/dispatches (NVIDIA checkpoints). Slower.\n");
 	::printf("  --lod-stats                          Report bound textures in mip statistics.\n");
 	::printf("  --shader-log-direction <value>       Silent, Console, or File.\n");
 	::printf("  --shader-log-folder <path>           Shader log output folder.\n");
@@ -212,6 +214,7 @@ static constexpr Flag FLAGS[] = {
     {"--relaxed-shader-float", &ConfigOptions::relaxed_shader_float},
     {"--native-rt", &ConfigOptions::native_rt},
     {"--ignore-flip-rate", &ConfigOptions::ignore_flip_rate},
+    {"--gpu-crash-diagnostics", &ConfigOptions::gpu_crash_diagnostics},
     {"--lod-stats", &ConfigOptions::lod_stats_enabled},
     {"--command-buffer-dump", &ConfigOptions::command_buffer_dump_enabled},
     {"--graphics-debug-dump", &ConfigOptions::graphics_debug_dump_enabled},

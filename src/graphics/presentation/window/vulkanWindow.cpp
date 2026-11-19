@@ -712,6 +712,36 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 		create.unlink<vk::PhysicalDeviceRayQueryFeaturesKHR>();
 	}
 
+	// Crash diagnostics go in front of the chain: the fault report and the NVIDIA checkpoints.
+	vk::PhysicalDeviceFaultFeaturesEXT       fault_features {};
+	vk::DeviceDiagnosticsConfigCreateInfoNV diagnostics_config {};
+	if (Config::GpuCrashDiagnosticsEnabled()) {
+		auto& info = create.get();
+		if (HasExtension(available_extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME)) {
+			device_extensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+			fault_features.deviceFault = VK_TRUE;
+			fault_features.pNext       = const_cast<void*>(info.pNext);
+			info.pNext                 = &fault_features;
+			graphics.device_fault_enabled = true;
+		}
+		if (HasExtension(available_extensions, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME)) {
+			device_extensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+			graphics.gpu_checkpoints_enabled = true;
+		}
+		if (HasExtension(available_extensions, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME)) {
+			device_extensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+			diagnostics_config.flags =
+			    vk::DeviceDiagnosticsConfigFlagBitsNV::eEnableShaderDebugInfo |
+			    vk::DeviceDiagnosticsConfigFlagBitsNV::eEnableResourceTracking |
+			    vk::DeviceDiagnosticsConfigFlagBitsNV::eEnableAutomaticCheckpoints;
+			diagnostics_config.pNext = const_cast<void*>(info.pNext);
+			info.pNext               = &diagnostics_config;
+		}
+		info.enabledExtensionCount   = static_cast<uint32_t>(device_extensions.size());
+		info.ppEnabledExtensionNames = device_extensions.data();
+		Log::WriteToConsoleAndLog(fmt::format("GPU crash diagnostics: device fault {}, checkpoints {}\n",
+		                                      graphics.device_fault_enabled, graphics.gpu_checkpoints_enabled));
+	}
 	vk::Device device = nullptr;
 	auto       result = physical_device.createDevice(&create.get(), nullptr, &device);
 	if (result != vk::Result::eSuccess) {

@@ -7,6 +7,7 @@
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "gpu_blit_shaders/gpu_imgui_hdr_spv.h"
+#include "graphics/host_gpu/deviceLossReport.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/presentation/ddsImage.h"
 #include "graphics/presentation/performanceOverlay.h"
@@ -626,7 +627,13 @@ PFN_vkVoidFunction LoadVulkanFunction(const char* name, void* user_data) {
 	return graphics.instance.getProcAddr(name);
 }
 
+// Device losses the overlay sees first are reported like the renderer's.
+const GraphicContext* g_overlay_graphics = nullptr;
+
 void CheckVulkanResult(VkResult result) {
+	if (result == VK_ERROR_DEVICE_LOST && g_overlay_graphics != nullptr) {
+		ReportDeviceLoss(*g_overlay_graphics, "overlay", static_cast<int>(result));
+	}
 	EXIT_IF(result != VK_SUCCESS);
 }
 
@@ -1103,6 +1110,7 @@ struct SystemOverlay::Impl {
 		}
 		EXIT_IF(image_count < 2);
 		EXIT_IF(!ImGui_ImplVulkan_LoadFunctions(VK_API_VERSION_1_3, LoadVulkanFunction, &graphics));
+		g_overlay_graphics = &graphics;
 
 		const VkFormat            color_format = static_cast<VkFormat>(format);
 		ImGui_ImplVulkan_InitInfo info {};

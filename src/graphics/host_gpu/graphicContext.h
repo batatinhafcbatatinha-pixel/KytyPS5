@@ -37,6 +37,9 @@ struct GraphicContext {
 	bool                               maintenance8_enabled                  = false;
 	bool                               robust_buffer_access_enabled          = false;
 	bool                               ray_query_enabled                     = false;
+	// --gpu-crash-diagnostics: VK_EXT_device_fault and VK_NV_device_diagnostic_checkpoints.
+	bool                               device_fault_enabled                  = false;
+	bool                               gpu_checkpoints_enabled               = false;
 	bool                               r8_srgb_views                         = false;
 	bool                               r8g8_srgb_views                       = false;
 	bool                               r4g4b4a4_render_targets               = false;
