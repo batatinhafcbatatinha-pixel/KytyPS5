@@ -46,8 +46,20 @@ public:
 			     "this up front, so the paging file is usually what needs to be larger.\n",
 			     m_size / (1024U * 1024U), static_cast<uint32_t>(GetLastError()));
 		}
-		m_backing_base = static_cast<uint8_t*>(
-		    MapViewOfFile(m_handle, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, m_size));
+		// The guest takes almost all of the first 1 TB, and the free rest there is what the
+		// Vulkan driver needs for its ray tracing address range (NVIDIA: ~10 GB contiguous, or
+		// vkCreateDevice fails with acceleration structures). The alias goes above it.
+		MEM_ADDRESS_REQUIREMENTS above {};
+		above.LowestStartingAddress = reinterpret_cast<void*>(uint64_t {1} << 40u);
+		MEM_EXTENDED_PARAMETER requirement {};
+		requirement.Type    = MemExtendedParameterAddressRequirements;
+		requirement.Pointer = &above;
+		m_backing_base      = static_cast<uint8_t*>(MapViewOfFile3(m_handle, GetCurrentProcess(), nullptr, 0,
+		                                                           m_size, 0, PAGE_READWRITE, &requirement, 1));
+		if (m_backing_base == nullptr) {
+			m_backing_base = static_cast<uint8_t*>(
+			    MapViewOfFile(m_handle, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, m_size));
+		}
 		if (m_backing_base == nullptr) {
 			EXIT("direct-memory backing: writable alias failed: 0x%08" PRIx32 "\n",
 			     static_cast<uint32_t>(GetLastError()));
