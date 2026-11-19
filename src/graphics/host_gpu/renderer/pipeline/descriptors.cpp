@@ -898,7 +898,7 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 				continue;
 			}
 			// A base outside guest memory is a stale descriptor the shader does not reach on this
-			// path (GTA V Fidelity binds one): it binds as null, like a zero base.
+			// path (one title binds such a record): it binds as null, like a zero base.
 			if (!GuestRange {address, 1}.Valid()) {
 				static std::atomic<uint32_t> reported {0};
 				if (reported.fetch_add(1, std::memory_order_relaxed) < 4) {
