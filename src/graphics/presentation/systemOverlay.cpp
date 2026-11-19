@@ -9,6 +9,7 @@
 #include "gpu_blit_shaders/gpu_imgui_hdr_spv.h"
 #include "graphics/host_gpu/deviceLossReport.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/recorder.h"
 #include "graphics/presentation/ddsImage.h"
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/window/hostInput.h"
@@ -1876,6 +1877,8 @@ struct SystemOverlay::Impl {
 		rendering.colorAttachmentCount = 1;
 		rendering.pColorAttachments    = &color;
 		command.beginRendering(rendering);
+		// ImGui records with its own function pointers: queued commands go first.
+		Recorder::Sync(command);
 		{
 			Common::LockGuard queue_lock(graphics.queue_mutex);
 			ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(),
