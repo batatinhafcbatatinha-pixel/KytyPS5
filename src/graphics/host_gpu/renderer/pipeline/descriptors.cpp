@@ -897,6 +897,18 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 				source = {};
 				continue;
 			}
+			// A base outside guest memory is a stale descriptor the shader does not reach on this
+			// path (title A Fidelity binds one): it binds as null, like a zero base.
+			if (!GuestRange {address, 1}.Valid()) {
+				static std::atomic<uint32_t> reported {0};
+				if (reported.fetch_add(1, std::memory_order_relaxed) < 4) {
+					std::printf("Buffer descriptor outside guest memory bound as null: 0x%016" PRIx64
+					            " size 0x%" PRIx64 "\n",
+					            address, size);
+				}
+				source = {};
+				continue;
+			}
 			if (descriptor.NumRecords() == UINT32_MAX) {
 				if (program.info.buffers[resource].written) {
 					// Sentinel write ranges end before tables captured by any bound stage.
