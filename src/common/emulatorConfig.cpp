@@ -253,6 +253,10 @@ bool IgnoreFlipRate() {
 	return g_config->ignore_flip_rate;
 }
 
+bool GpuCrashDiagnosticsEnabled() {
+	return g_config->gpu_crash_diagnostics;
+}
+
 bool LodStatsEnabled() {
 	return g_config->lod_stats_enabled;
 }

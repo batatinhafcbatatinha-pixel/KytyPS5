@@ -511,6 +511,11 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 		}
 	}
 
+	if (buffer.GetGraphics().gpu_checkpoints_enabled) {
+		// The marker is the program hash: a device loss reports the last ones the GPU reached.
+		vk_buffer.setCheckpointNV(
+		    reinterpret_cast<const void*>(static_cast<uintptr_t>(input_info.stage.module->info.shader_hash)));
+	}
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	constexpr uint32_t DISPATCH_INITIATOR_ORDERED_APPEND_ENABLE = 1u << 3u;
 	const uint64_t     group_threads = uint64_t {std::max(input_info.threads_num[0], 1u)} *
@@ -593,6 +598,11 @@ void RenderExecutor::DispatchIndirect(CommandBuffer& buffer, uint64_t args_addr,
 	const auto vk_buffer = buffer.Handle();
 	if (HasStorageWrites(input_info, bindings)) {
 		ShaderWriteHazardBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	}
+	if (buffer.GetGraphics().gpu_checkpoints_enabled) {
+		// The marker is the program hash: a device loss reports the last ones the GPU reached.
+		vk_buffer.setCheckpointNV(
+		    reinterpret_cast<const void*>(static_cast<uintptr_t>(input_info.stage.module->info.shader_hash)));
 	}
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	vk_buffer.dispatchIndirect(args_buffer->Handle(), args_offset);

@@ -1205,6 +1205,11 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 		ShaderWriteHazardBarrier(vk_buffer, shader_write_stages);
 	}
 	buffer.BeginRendering(rendering);
+	if (m_context.GetGraphics().gpu_checkpoints_enabled) {
+		const auto hash = state.ps_active ? state.ps_input_info.stage.module->info.shader_hash
+		                                  : vertex_stages.back().stage.module->info.shader_hash;
+		vk_buffer.setCheckpointNV(reinterpret_cast<const void*>(static_cast<uintptr_t>(hash)));
+	}
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	auto&         occlusion_queries = m_context.GetOcclusionQueries();
 	const int32_t occlusion_query   = occlusion_queries.Begin(vk_buffer);
