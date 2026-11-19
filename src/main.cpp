@@ -74,6 +74,7 @@ static void PrintUsage() {
 	::printf("  --occlusion-queries                  Count occlusion query samples on the GPU.\n");
 	::printf("  --relaxed-shader-float               Native GPU float ops in shaders; faster, can be inaccurate.\n");
 	::printf("  --native-rt                          Use native RT on the GPU.\n");
+	::printf("  --ignore-flip-rate                   Flip at every vblank even when the game asks for 30 or 20 fps.\n");
 	::printf("  --lod-stats                          Report bound textures in mip statistics.\n");
 	::printf("  --shader-log-direction <value>       Silent, Console, or File.\n");
 	::printf("  --shader-log-folder <path>           Shader log output folder.\n");
@@ -210,6 +211,7 @@ static constexpr Flag FLAGS[] = {
     {"--occlusion-queries", &ConfigOptions::occlusion_queries_enabled},
     {"--relaxed-shader-float", &ConfigOptions::relaxed_shader_float},
     {"--native-rt", &ConfigOptions::native_rt},
+    {"--ignore-flip-rate", &ConfigOptions::ignore_flip_rate},
     {"--lod-stats", &ConfigOptions::lod_stats_enabled},
     {"--command-buffer-dump", &ConfigOptions::command_buffer_dump_enabled},
     {"--graphics-debug-dump", &ConfigOptions::graphics_debug_dump_enabled},

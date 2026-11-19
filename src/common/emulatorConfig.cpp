@@ -249,6 +249,10 @@ bool NativeRtEnabled() {
 	return g_config->native_rt;
 }
 
+bool IgnoreFlipRate() {
+	return g_config->ignore_flip_rate;
+}
+
 bool LodStatsEnabled() {
 	return g_config->lod_stats_enabled;
 }

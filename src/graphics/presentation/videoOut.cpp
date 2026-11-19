@@ -492,7 +492,8 @@ static int DeleteVideoOutEvent(int handle, EventQueue::KernelEqueue eq, VideoOut
 static bool IsFlipDueLocked(const VideoOutConfig& cfg) {
 	const auto interval = static_cast<uint64_t>(cfg.flip_rate) + 1;
 
-	return interval <= 1 || cfg.vblank_status.count - cfg.flip_vblank >= interval;
+	return interval <= 1 || Config::IgnoreFlipRate() ||
+	       cfg.vblank_status.count - cfg.flip_vblank >= interval;
 }
 
 static bool IsValidBufferIndex(int index) {
@@ -1271,6 +1272,10 @@ KYTY_SYSV_ABI int VideoOutSetFlipRate(int handle, int rate) {
 	}
 
 	Common::LockGuard lock(ctx->mutex);
+	if (ctx->flip_rate != rate) {
+		Log::WriteToConsoleAndLog(fmt::format("VideoOut: flip rate {}{}\n", rate,
+		                                      Config::IgnoreFlipRate() ? " (ignored)" : ""));
+	}
 	ctx->flip_rate = rate;
 
 	return OK;
