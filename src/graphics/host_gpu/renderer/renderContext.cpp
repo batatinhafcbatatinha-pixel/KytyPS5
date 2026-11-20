@@ -130,11 +130,12 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 	}
 	const auto unmap = [this, vaddr, size] {
 		// Check cache ownership on the GPU thread. Guest-memory callbacks can still
-		// access a range with no cached data, so they must finish before it is unmapped.
+		// access a range with no cached data, so those that may touch it must finish before it
+		// is unmapped. Host-only callbacks (flips, interrupts) do not force a drain.
 		if (m_command_scheduler.Active() &&
 		    (m_buffer_cache.IsRegionRegistered(vaddr, size) ||
 		     m_texture_cache.IsRegionRegistered(vaddr, size) ||
-		     m_command_scheduler.HasPendingPriorityOperations())) {
+		     m_command_scheduler.HasPendingPriorityOperations({vaddr, size}))) {
 			const auto tick = m_command_scheduler.CurrentTick();
 			m_command_scheduler.Finish();
 			m_command_scheduler.WaitPriorityOperations(tick);
