@@ -108,18 +108,52 @@ static bool LoopGuardEnabled() {
 	return enabled;
 }
 
-// A latch's back-edge condition, counted and cleared once the invocation's limit is reached. Only
-// a latch that already branches out of its loop is guarded, so no edge (or phi operand) is added.
+static bool IsLatchOf(const IR::Block* block, const IR::Block* target) {
+	return target != nullptr && target->terminator.loop_header &&
+	       target->terminator.continue_block == block;
+}
+
+// Counts an unconditional back edge; the loop is left at one of its exit branches.
+static void EmitLoopGuardCount(ValueEmitContext& ctx, const IR::Block* block) {
+	auto& s = ctx.state;
+	if (s.loop_guard_variable == 0 || !IsLatchOf(block, block->terminator.true_block)) return;
+	const auto count = s.builder.AllocateId();
+	s.builder.AddFunction(spv::OpLoad, TypeU32(s), count, s.loop_guard_variable);
+	s.builder.AddFunction(spv::OpStore, s.loop_guard_variable, EmitAddU32(s, count, ConstantU32(s, 1)));
+}
+
+// A latch's back-edge condition, counted and cleared once the invocation's limit is reached; a
+// branch that can leave an enclosing loop (to its merge block) takes that exit past the limit. No
+// edge (or phi operand) is added.
 static uint32_t EmitLoopGuard(ValueEmitContext& ctx, const IR::Block* block, uint32_t condition) {
 	auto& s = ctx.state;
 	if (s.loop_guard_variable == 0) return condition;
 	const auto& term  = block->terminator;
-	const auto  latch = [&](const IR::Block* target) {
-		return target != nullptr && target->terminator.loop_header &&
-		       target->terminator.continue_block == block;
-	};
+	const auto  latch = [&](const IR::Block* target) { return IsLatchOf(block, target); };
 	const bool back_true = latch(term.true_block), back_false = latch(term.false_block);
-	if (back_true == back_false) return condition;
+	if (back_true == back_false) {
+		const auto found = s.loop_guard_exits.find(block);
+		if (back_true || found == s.loop_guard_exits.end()) return condition;
+		const auto exits = [&](const IR::Block* target) {
+			return std::find(found->second.begin(), found->second.end(), target) != found->second.end();
+		};
+		const bool exit_true = exits(term.true_block), exit_false = exits(term.false_block);
+		if (exit_true == exit_false) return condition;
+		const auto count = s.builder.AllocateId();
+		s.builder.AddFunction(spv::OpLoad, TypeU32(s), count, s.loop_guard_variable);
+		const auto past = s.builder.AllocateId();
+		s.builder.AddFunction(spv::OpUGreaterThanEqual, TypeBool(s), past, count,
+		                      ConstantU32(s, s.loop_guard_limit));
+		const auto forced = s.builder.AllocateId();
+		if (exit_true) {
+			s.builder.AddFunction(spv::OpLogicalOr, TypeBool(s), forced, condition, past);
+		} else {
+			const auto within = s.builder.AllocateId();
+			s.builder.AddFunction(spv::OpLogicalNot, TypeBool(s), within, past);
+			s.builder.AddFunction(spv::OpLogicalAnd, TypeBool(s), forced, condition, within);
+		}
+		return forced;
+	}
 	const auto u     = TypeU32(s);
 	const auto count = s.builder.AllocateId();
 	s.builder.AddFunction(spv::OpLoad, u, count, s.loop_guard_variable);
@@ -162,6 +196,7 @@ void EmitStructuredTerminator(ValueEmitContext& ctx, const IR::Block* block) {
 				EmitReturn(ctx);
 				return;
 			}
+			EmitLoopGuardCount(ctx, block);
 			emit_merge();
 			ctx.state.builder.AddFunction(spv::OpBranch, target->Definition());
 			return;
@@ -754,6 +789,22 @@ void EmitProgram(EmitterState& state) {
 		state.builder.AddFunction(spv::OpVariable,
 		                          TypePointer(state, spv::StorageClassFunction, TypeU32(state)),
 		                          state.loop_guard_variable, spv::StorageClassFunction);
+		// The blocks of each loop (reached from its header without passing its merge) can leave
+		// it through branches to that merge.
+		for (const auto* header: state.program.blocks) {
+			const auto* merge = header->terminator.merge_block;
+			if (!header->terminator.loop_header || merge == nullptr) continue;
+			std::vector<const IR::Block*>        stack {header};
+			std::unordered_set<const IR::Block*> seen {header, merge};
+			while (!stack.empty()) {
+				const auto* current = stack.back();
+				stack.pop_back();
+				state.loop_guard_exits[current].push_back(merge);
+				for (const auto* next: current->ImmSuccessors()) {
+					if (seen.insert(next).second) stack.push_back(next);
+				}
+			}
+		}
 	}
 	if (state.pixel_valid_mask_variable != 0) {
 		state.builder.AddFunction(spv::OpVariable,
