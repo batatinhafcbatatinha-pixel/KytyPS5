@@ -96,7 +96,7 @@
 <text x="670.8" y="366" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
 <text x="727.0" y="366" font-size="11" fill="#9198a1" text-anchor="end">80</text>
 <text x="739" y="349" font-size="14" font-weight="600" fill="#f85149">16.4 fps</text>
-<text x="739" y="366" font-size="11.5" fill="#9198a1">Fidelity · 720p · no limit reached</text>
+<text x="739" y="366" font-size="11.5" fill="#9198a1">Fidelity · 720p</text>
 <rect x="502" y="384" width="225" height="12" rx="6" fill="#5c1f1c"/>
 <rect x="502" y="384" width="37.1" height="12" rx="6" fill="#f85149"/>
 <text x="502.0" y="412" font-size="11" fill="#9198a1" text-anchor="start">0</text>
@@ -108,7 +108,7 @@
 <text x="670.8" y="412" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
 <text x="727.0" y="412" font-size="11" fill="#9198a1" text-anchor="end">80</text>
 <text x="739" y="395" font-size="14" font-weight="600" fill="#f85149">13.2 fps</text>
-<text x="739" y="412" font-size="11.5" fill="#9198a1">Fidelity · 1080p · no limit reached</text>
+<text x="739" y="412" font-size="11.5" fill="#9198a1">Fidelity · 1080p</text>
 <rect x="502" y="430" width="225" height="12" rx="6" fill="#5c1f1c"/>
 <rect x="502" y="430" width="15.8" height="12" rx="6" fill="#f85149"/>
 <text x="502.0" y="458" font-size="11" fill="#9198a1" text-anchor="start">0</text>
