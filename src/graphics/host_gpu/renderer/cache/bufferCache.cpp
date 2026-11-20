@@ -220,12 +220,15 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	                           vk::PipelineStageFlagBits::eHost,
 	                       {}, 0, nullptr, 1, &after, 0, nullptr);
 	auto publish = [total_size, buffer_address, copies = std::move(copies),
-	                download = std::move(download)] {
+	                download = std::move(download), pages = &m_memory_tracker.Pages()] {
 		download.buffer->Invalidate(download.offset, total_size);
 		for (const auto& copy: copies) {
-			Libs::LibKernel::Memory::WriteBacking(
-			    buffer_address + copy.srcOffset,
-			    download.mapped + (copy.dstOffset - download.offset), copy.size);
+			const auto  address = buffer_address + copy.srcOffset;
+			const auto* bytes   = download.mapped + (copy.dstOffset - download.offset);
+			// Private runtime mappings are outside the backing store.
+			if (!Libs::LibKernel::Memory::TryWriteBacking(address, bytes, copy.size)) {
+				pages->WriteGuest(address, bytes, copy.size);
+			}
 		}
 	};
 	if constexpr (async) {
