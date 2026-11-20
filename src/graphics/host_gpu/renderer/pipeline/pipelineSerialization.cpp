@@ -156,10 +156,18 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 		file.Read(bytes.data(), static_cast<uint32_t>(bytes.size()), &read);
 		bytes.resize(read);
 	}
+	// Creating pipelines from several threads at once crashes inside NVIDIA's Linux SPIR-V
+	// compiler (libnvidia-glvkspirv), so that driver warms up serially. Elsewhere the work stays
+	// spread over the pool.
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__)
+	const bool serial = m_graphics.physical_device_properties.vendorID == 0x10DEu;
+#else
+	const bool serial = false;
+#endif
+	const size_t threads = serial ? 1u : Common::ParallelThreads();
 	Log::WriteToConsoleAndLog(fmt::format(
 	    "Shader cache: compiling shaders and pipelines from {} ({:.1f} MB) with {} threads\n",
-	    Common::PathToString(path), static_cast<double>(bytes.size()) / 1'000'000.0,
-	    Common::ParallelThreads()));
+	    Common::PathToString(path), static_cast<double>(bytes.size()) / 1'000'000.0, threads));
 	auto       records = std::span<const uint8_t>(bytes);
 	const bool reusable =
 	    records.size() >= header.size() && std::ranges::equal(records.first(header.size()), header);
@@ -187,7 +195,13 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 			});
 		}
 	}
-	Common::ParallelFor(jobs.size(), [&](size_t i) { jobs[i](); });
+	if (serial) {
+		for (auto& job: jobs) {
+			job();
+		}
+	} else {
+		Common::ParallelFor(jobs.size(), [&](size_t i) { jobs[i](); });
+	}
 	// A key with a stage missing from the store keeps no pipeline.
 	std::erase_if(m_graphics_pipelines,
 	              [](const auto& entry) { return entry.second.pipeline == nullptr; });
