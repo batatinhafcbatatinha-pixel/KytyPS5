@@ -677,9 +677,38 @@ void TestFatalPaths() {
   }
 }
 
+// Guest writes past the tracker keep every page's watcher protection and reach the bytes of
+// watched and unwatched pages alike.
+void TestWriteGuestKeepsWatcherProtection() {
+  PageManager manager;
+  constexpr auto page_size = TRACKER_PAGE_SIZE;
+  auto *memory = Allocate(page_size * 3);
+  const auto address = reinterpret_cast<uint64_t>(memory);
+
+  manager.UpdatePageWatchers<true, true>(address, page_size);
+  manager.UpdatePageWatchers<true>(address + page_size, page_size);
+  std::vector<uint8_t> bytes(page_size * 2);
+  for (size_t i = 0; i < bytes.size(); i++) {
+    bytes[i] = static_cast<uint8_t>(i * 7u + 3u);
+  }
+  manager.WriteGuest(address + page_size / 2, bytes.data(), bytes.size());
+  Check(Protection(memory) == PAGE_NOACCESS,
+        "guest write dropped the read watch protection");
+  Check(Protection(memory + page_size) == PAGE_READONLY,
+        "guest write dropped the write watch protection");
+  Check(IsWritable(memory + page_size * 2),
+        "guest write left an unwatched page protected");
+  manager.UpdatePageWatchers<false, true>(address, page_size);
+  manager.UpdatePageWatchers<false>(address + page_size, page_size);
+  Check(std::memcmp(memory + page_size / 2, bytes.data(), bytes.size()) == 0,
+        "guest write stored the wrong bytes");
+  Check(VirtualFree(memory, 0, MEM_RELEASE) != 0, "VirtualFree failed");
+}
+
 } // namespace
 
 namespace Libs::LibKernel::Memory {
+
 
 bool ProtectGuestHostMemory(uint64_t vaddr, uint64_t size,
                             Common::VirtualMemory::Mode mode) {
@@ -701,6 +730,7 @@ int main(int argc, char **argv) {
   TestRegionEndpointBatching();
   TestReadWriteWatcherInteractions();
   TestConcurrentSharedWatchers();
+  TestWriteGuestKeepsWatcherProtection();
   TestFatalPaths();
   std::puts("PageManagerTests: all cases passed");
   return 0;
