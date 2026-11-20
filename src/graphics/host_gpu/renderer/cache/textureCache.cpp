@@ -1792,24 +1792,38 @@ bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uin
 	return true;
 }
 
-bool TextureCache::DownloadImageMemory(ImageId id) {
-	auto& image = m_slot_images[id];
-	if (image.depth_id) {
+bool TextureCache::DownloadImageMemory(ImageId id, bool unlocked_copy) {
+	auto* image = &m_slot_images[id];
+	if (image->depth_id) {
 		return false;
 	}
-	if (!image.SafeToDownload() || !CanDownload(image)) {
+	if (!image->SafeToDownload() || !CanDownload(*image)) {
 		return false;
 	}
-	const auto range = image.info.data;
+	const auto range = image->info.data;
 	auto download = m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download)
-	                    .MapDownload(range.size, std::max<uint64_t>(image.info.bytes_per_block, 4));
-	if (!LibKernel::Memory::TryReadBacking(range.address, download.mapped, range.size)) {
+	                    .MapDownload(range.size, std::max<uint64_t>(image->info.bytes_per_block, 4));
+	if (unlocked_copy) {
+		// Guest write faults wait for m_lock in InvalidateMemory and would spin for the whole
+		// copy. A write landing meanwhile marks the image CPU dirty, and a freed slot can be
+		// reused, so the image is looked up again before its download is recorded.
+		const auto serial = image->serial;
+		m_lock.unlock();
+		const bool read =
+		    LibKernel::Memory::TryReadBacking(range.address, download.mapped, range.size);
+		m_lock.lock();
+		image = m_slot_images.try_get(id);
+		if (!read || image == nullptr || image->serial != serial || !image->registered ||
+		    !image->SafeToDownload()) {
+			return false;
+		}
+	} else if (!LibKernel::Memory::TryReadBacking(range.address, download.mapped, range.size)) {
 		return false;
 	}
 	download.buffer->Flush(download.offset, range.size);
 
-	DownloadImage(image, *download.buffer, download.offset, range.size,
-	              image.info.resources.levels);
+	DownloadImage(*image, *download.buffer, download.offset, range.size,
+	              image->info.resources.levels);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::TextureDownloadBytes, range.size);
 	vk::BufferMemoryBarrier barrier {};
 	barrier.srcAccessMask = vk::AccessFlagBits::eMemoryWrite | vk::AccessFlagBits::eTransferWrite |
@@ -2121,11 +2135,13 @@ void TextureCache::RunGarbageCollector() {
 				continue;
 			}
 			const bool download = owner->SafeToDownload();
-			if (download && (!pressured || owner->info.HasStencil() || !DownloadImageMemory(id))) {
+			// The copy runs without m_lock: the image is looked up again after it.
+			if (download &&
+			    (!pressured || owner->info.HasStencil() || !DownloadImageMemory(id, true))) {
 				continue;
 			}
 			if (download) {
-				downloaded.push_back(owner->info.data);
+				downloaded.push_back(m_slot_images[id].info.data);
 			}
 			--deletions;
 			FreeImage(id);
