@@ -135,6 +135,10 @@ int RemapIntoPrtMemory(uint64_t prt_vaddr, uint64_t old_vaddr, size_t size, int 
 int UnmapAmmMemory(uint64_t vaddr, size_t size);
 bool                   TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size);
 bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size);
+// One byte from each of count addresses stride apart, equal to count one-byte TryReadBacking
+// calls. Returns false if any address is unbacked; out is unspecified then.
+bool                   TryReadBackingStrided(uint64_t first, uint64_t stride, uint32_t count,
+                                             uint8_t* out);
 bool                   TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   CopySparseMemory(uint64_t vaddr, void* data, uint64_t size);

@@ -1809,6 +1809,70 @@ void TestCopySparseMemoryMappings() {
 	std::printf("[host]    %-48s ok\n", test);
 }
 
+void TestStridedBackingReads() {
+	using namespace Libs::LibKernel::Memory;
+	const char* test = "StridedBackingReads";
+	constexpr uint64_t pages = 4;
+	void*              address = nullptr;
+	CheckOk(test,
+	        KernelMapNamedFlexibleMemory(&address, SceKernelPageSize * pages, SceKernelProtCpuRw,
+	                                     0, "strided_backing"),
+	        "map flexible pages");
+	const auto base = reinterpret_cast<uint64_t>(address);
+	for (uint64_t offset = 0; offset < SceKernelPageSize * pages; ++offset) {
+		*reinterpret_cast<uint8_t*>(base + offset) =
+		    static_cast<uint8_t>((offset / SceKernelPageSize) * 31u + offset * 7u);
+	}
+	CheckOk(test, KernelMunmap(base + SceKernelPageSize * 2, SceKernelPageSize),
+	        "unmap the third page");
+
+	// Matches one-byte reads, across pages and at the start and end of the mappings.
+	const auto matches_single_reads = [&](uint64_t first, uint64_t stride, uint32_t count) {
+		std::vector<uint8_t> strided(count, 0x55);
+		if (!TryReadBackingStrided(first, stride, count, strided.data())) {
+			return false;
+		}
+		for (uint32_t index = 0; index < count; ++index) {
+			uint8_t single = 0;
+			if (!TryReadBacking(first + stride * index, &single, 1) || single != strided[index]) {
+				return false;
+			}
+		}
+		return true;
+	};
+	Check(test,
+	      matches_single_reads(base, 0x1003, 7) &&
+	          matches_single_reads(base, SceKernelPageSize, 2) &&
+	          matches_single_reads(base + SceKernelPageSize * 2 - 1, 1, 1) &&
+	          matches_single_reads(base + SceKernelPageSize * 3, 1, 64) &&
+	          matches_single_reads(base + SceKernelPageSize * 4 - 1, 1, 1) &&
+	          matches_single_reads(base + 5, 0, 3) &&
+	          matches_single_reads(base + SceKernelPageSize - 1, 1, 2),
+	      "strided read differs from single-byte reads");
+
+	uint8_t out[4] {};
+	Check(test,
+	      !TryReadBackingStrided(base, SceKernelPageSize, 3, out) &&
+	          !TryReadBackingStrided(base + SceKernelPageSize * 2, 1, 1, out) &&
+	          !TryReadBackingStrided(base + SceKernelPageSize * 4 - 1, 1, 2, out),
+	      "strided read accepted an unbacked address");
+	Check(test, matches_single_reads(base, SceKernelPageSize * 3, 2),
+	      "strided read did not step over the unbacked page");
+	Check(test,
+	      !TryReadBackingStrided(base, 1, 0, out) && !TryReadBackingStrided(base, 1, 1, nullptr) &&
+	          !TryReadBackingStrided(UINT64_MAX, 0, 1, out) &&
+	          !TryReadBackingStrided(UINT64_MAX - 1, 1, 2, out) &&
+	          !TryReadBackingStrided(base, UINT64_MAX / 2, 3, out),
+	      "strided read accepted an empty or overflowing request");
+
+	CheckOk(test, KernelMunmap(base, SceKernelPageSize * 2), "unmap the first pages");
+	CheckOk(test, KernelMunmap(base + SceKernelPageSize * 3, SceKernelPageSize),
+	        "unmap the last page");
+	Check(test, !TryReadBackingStrided(base, 1, 1, out),
+	      "strided read resolved an unmapped page");
+	std::printf("[host]    %-48s ok\n", test);
+}
+
 void TestFlexibleMapQueryAndWholeMunmap() {
 	const char* test     = "FlexibleMapQueryAndWholeMunmap";
 	const auto  baseline = AvailableFlexibleMemory(test);
@@ -6147,6 +6211,7 @@ int main(int argc, char** argv) {
 		RunTest(TestClampRangeSkipsStateLock);
 		RunTest(TestSparseBackingReadPreservesResidency);
 		RunTest(TestCopySparseMemoryMappings);
+		RunTest(TestStridedBackingReads);
 		RunTest(TestSparseReadDuringDirectCommit);
 		RunTest(TestDirectMapQueryOffsetAndPartialMunmap);
 		RunTest(TestFlexibleMemoryUsesSharedBacking);
@@ -6204,6 +6269,7 @@ int main(int argc, char** argv) {
 	RunTest(TestGuestAddressSpaceOwnsReservationsBeforeBacking);
 	RunTest(TestSparseBackingReadPreservesResidency);
 	RunTest(TestCopySparseMemoryMappings);
+	RunTest(TestStridedBackingReads);
 	RunTest(TestSparseReadDuringDirectCommit);
 	RunTest(TestConcurrentBackingReads);
 	RunTest(TestBackingReadsSkipMappingLock);

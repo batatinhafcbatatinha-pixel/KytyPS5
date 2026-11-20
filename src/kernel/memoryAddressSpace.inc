@@ -180,6 +180,28 @@ public:
 		return true;
 	}
 
+	// One byte from each of count addresses stride apart, as count one-byte TryReadBacking calls
+	// would read them, with one page lookup per address. Fails without reading when an address
+	// is unbacked, so out is unspecified then. Needs no lock, like TryReadBacking.
+	bool TryReadBackingStrided(uint64_t first, uint64_t stride, uint32_t count,
+	                           uint8_t* out) const {
+		// The last address must stay below UINT64_MAX, as for a one-byte TryReadBacking.
+		const uint64_t last_index = count - 1u;
+		if (out == nullptr || count == 0 || first == UINT64_MAX ||
+		    (stride != 0 && last_index > (UINT64_MAX - 1u - first) / stride)) {
+			return false;
+		}
+		for (uint32_t index = 0; index < count; ++index) {
+			const auto address = first + stride * index;
+			const auto entry   = LoadPage(address >> PageBits);
+			if (entry == 0) {
+				return false;
+			}
+			out[index] = m_backing_base[(uint64_t {entry - 1u} << PageBits) + (address & PageMask)];
+		}
+		return true;
+	}
+
 	template <typename Gap>
 	void ReadSparseBacking(uint64_t vaddr, void* data, uint64_t size, Gap&& gap) const {
 		auto* destination = static_cast<uint8_t*>(data);
@@ -562,6 +584,10 @@ public:
 
 	bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 		return m_backing->TryReadBacking(vaddr, data, size);
+	}
+
+	bool TryReadBackingStrided(uint64_t first, uint64_t stride, uint32_t count, uint8_t* out) {
+		return m_backing->TryReadBackingStrided(first, stride, count, out);
 	}
 
 	[[nodiscard]] bool IsBacked(uint64_t vaddr, uint64_t size) const {
