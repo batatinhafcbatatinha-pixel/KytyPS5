@@ -12615,6 +12615,44 @@ void TestPixelProgramCacheBindingIdentity() {
 
 }
 
+// Vertex pipeline stages take their push data from the top of the block, below the previous
+// vertex stage's data; pixel and compute keep the bottom-up start. A stage pushes its data
+// exactly when the old bottom-up rule did, whatever its position.
+void TestGraphicsPushConstantFit() {
+  using ShaderRecompiler::IR::PushData;
+  constexpr auto Count = PushData::DwordCount;
+  for (const auto stage : {ShaderType::Pixel, ShaderType::Compute}) {
+    for (uint32_t floor = 0; floor <= Count; floor++) {
+      for (uint32_t size = 0; size <= Count; size++) {
+        const bool fits = size != 0 && floor + size <= Count;
+        Check(PushData::StartFor(stage, floor, size) == (fits ? floor : PushData::NoStart),
+              "pixel or compute push data moved from its bottom-up start");
+      }
+    }
+  }
+  for (const auto stage : {ShaderType::Vertex, ShaderType::Mesh, ShaderType::TessellationControl,
+                           ShaderType::TessellationEvaluation}) {
+    for (uint32_t floor = 0; floor <= Count; floor++) {
+      // above: data of the earlier vertex pipeline stages, pushed below the top.
+      for (uint32_t above = 0; floor + above <= Count; above++) {
+        const auto ceiling = Count - above;
+        for (uint32_t size = 0; size <= Count; size++) {
+          // The old rule: bottom-up after the pixel data and the earlier stages.
+          const bool pushed_before = size != 0 && floor + above + size <= Count;
+          const auto start = PushData::StartFor(stage, floor, size, ceiling);
+          Check(pushed_before ? start == ceiling - size : start == PushData::NoStart,
+                "a vertex pipeline stage pushed its data differently from the old rule");
+          Check(start == PushData::NoStart || start >= floor,
+                "vertex pipeline push data overlapped the pixel data");
+        }
+      }
+    }
+  }
+  // The first vertex stage keeps its start for every pixel data size it fits next to.
+  Check(PushData::StartFor(ShaderType::Vertex, 2, 4) == PushData::StartFor(ShaderType::Vertex, 7, 4),
+        "the vertex push-data start depended on the pixel data size");
+}
+
 void TestGraphicsPushConstantPlacement() {
   using BindingKind = ShaderRecompiler::IR::DescriptorBindingKind;
   constexpr uint32_t OffsetDecoration = 35;
@@ -13724,6 +13762,7 @@ int main() {
   TestNewShaderRecompilerPixelPipelineEntry();
   TestComputeLdsAllocationIdentity();
   TestPixelProgramCacheBindingIdentity();
+  TestGraphicsPushConstantFit();
   TestGraphicsPushConstantPlacement();
   TestCapturedBufferLoadUbyteD16Decode();
   TestCapturedGlobalLoadShortD16HiDecode();
