@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
 #include <ranges>
@@ -44,6 +45,14 @@ struct Frame {
 // Changes with every build, so records never meet code that encodes them differently. Zero when
 // the executable cannot be found.
 uint64_t BuildStamp() {
+	// Developer knob: KYTY_SHADER_CACHE_STAMP=N (N != 0) replaces the executable's time, so a
+	// rebuild that does not change shader translation keeps the store. N must change whenever the
+	// shader recompiler or the record encoding changes, or stored programs no longer match the code.
+	if (const char* env = std::getenv("KYTY_SHADER_CACHE_STAMP"); env != nullptr && env[0] != 0) {
+		if (const auto value = std::strtoull(env, nullptr, 10); value != 0) {
+			return value;
+		}
+	}
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	std::array<wchar_t, 32768> name {};
 	GetModuleFileNameW(nullptr, name.data(), static_cast<DWORD>(name.size()));
