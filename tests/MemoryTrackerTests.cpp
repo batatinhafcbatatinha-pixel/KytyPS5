@@ -989,6 +989,40 @@ void TestQueriesSkipRegionLock() {
         "dirty queries or a clean read-only upload waited for the region lock");
 }
 
+void TestDownloadSkipsRegionLock() {
+  constexpr auto page_size = Libs::Graphics::TRACKER_PAGE_SIZE;
+  TrackerHarness harness;
+  auto &tracker = harness.tracker;
+  auto *memory = Allocate(2);
+  const auto address = reinterpret_cast<uint64_t>(memory);
+  const auto clean = address + page_size;
+  tracker.ForEachUploadRange(
+      clean, page_size, false, [](uint64_t, uint64_t) noexcept {},
+      []() noexcept {});
+
+  uint32_t downloads = 0;
+  // A GPU-clean page of a region held by an upload has nothing to download or unmark.
+  const bool completed_while_upload_blocked =
+      RunDuringParkedUpload(tracker, address, [&] {
+        tracker.ForEachDownloadRange<true>(
+            clean, page_size,
+            [&](uint64_t, uint64_t) noexcept { downloads++; });
+        tracker.UnmarkRegionAsGpuModified(clean, page_size);
+      });
+
+  uint32_t dirty_downloads = 0;
+  tracker.ForEachDownloadRange<true>(
+      address, page_size * 2,
+      [&](uint64_t, uint64_t) noexcept { dirty_downloads++; });
+  const bool cleared = !tracker.IsRegionGpuModified(address, page_size * 2);
+  tracker.MarkRegionAsCpuModified(address, page_size * 2);
+  Release(memory);
+  Check(completed_while_upload_blocked && downloads == 0 &&
+            dirty_downloads == 1 && cleared,
+        "a GPU-clean download or unmark waited for the region lock, or a "
+        "GPU-dirty page was not downloaded");
+}
+
 void TestDownloadDoesNotSerializeDisjointRegion() {
   constexpr auto region_size = Libs::Graphics::TRACKER_REGION_SIZE;
   constexpr auto page_size = Libs::Graphics::TRACKER_PAGE_SIZE;
@@ -1330,6 +1364,7 @@ int main(int argc, char **argv) {
   TestConcurrentColdUploads();
   TestUploadDoesNotSerializeDisjointRegion();
   TestQueriesSkipRegionLock();
+  TestDownloadSkipsRegionLock();
   TestDownloadDoesNotSerializeDisjointRegion();
   TestGpuUnmarkUsesRegionMask();
   TestFullRegionGpuUnmarkBatching();
