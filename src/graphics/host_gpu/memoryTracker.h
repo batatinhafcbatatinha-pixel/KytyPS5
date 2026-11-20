@@ -29,6 +29,25 @@ public:
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	// A page of the range is rewritten so often that it is left unwatched: no fault reports its writes.
 	[[nodiscard]] bool IsRegionUnwatched(uint64_t vaddr, uint64_t size);
+	// func(page, unwatched) for each page of a page-aligned range, IsRegionUnwatched per page with
+	// one lock per tracker region.
+	template <typename Func>
+	void ForEachPageUnwatched(uint64_t vaddr, uint64_t size, Func&& func) {
+		ValidateRange(vaddr, size);
+		for (auto page = vaddr; page < vaddr + size;) {
+			const auto index      = page / TRACKER_REGION_SIZE;
+			const auto region_end = std::min(vaddr + size, (index + 1) * TRACKER_REGION_SIZE);
+			auto*      manager    = m_regions[index].load(std::memory_order_acquire);
+			if (manager == nullptr) {
+				for (; page < region_end; page += TRACKER_PAGE_SIZE) func(page, false);
+				continue;
+			}
+			std::scoped_lock lock(manager->lock);
+			for (; page < region_end; page += TRACKER_PAGE_SIZE) {
+				func(page, manager->IsHot(page % TRACKER_REGION_SIZE, TRACKER_PAGE_SIZE));
+			}
+		}
+	}
 	void               MarkRegionAsCpuModified(uint64_t vaddr, uint64_t size);
 	void               UnmarkRegionAsGpuModified(uint64_t vaddr, uint64_t size);
 	// Removes protection from a range and flushes GPU-owned data when required.
