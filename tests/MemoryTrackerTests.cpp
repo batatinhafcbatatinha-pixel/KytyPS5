@@ -1341,6 +1341,8 @@ bool ProtectGuestHostMemory(uint64_t vaddr, uint64_t size,
 } // namespace Libs::LibKernel::Memory
 
 int main(int argc, char **argv) {
+  // The cases cover the rewritten-page mode too, which is off by default.
+  Libs::Graphics::g_sticky_pages.store(true);
   if (argc == 3 && std::strcmp(argv[1], "--death") == 0) {
     RunDeathCase(argv[2]);
   }
