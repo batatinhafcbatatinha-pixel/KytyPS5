@@ -406,6 +406,92 @@ void TestCpuDirtyUpload() {
   Release(memory);
 }
 
+// A repeated ForEachUploadRange is skipped only while its regions are
+// unchanged: a CPU write, a GPU unmark or a download in between makes the next
+// identical call run again, a new tracker does not take an old one's skip, and
+// a page kept unwatched is uploaded again in the next submission.
+void TestRepeatedUploadSkip() {
+  constexpr auto page_size = Libs::Graphics::TRACKER_PAGE_SIZE;
+  auto *memory = Allocate(2);
+  const auto address = reinterpret_cast<uint64_t>(memory);
+  uint32_t ranges = 0;
+  uint32_t uploads = 0;
+  const auto upload = [&](MemoryTracker &tracker, bool written) {
+    ranges = 0;
+    tracker.ForEachUploadRange(
+        address, page_size, written,
+        [&](uint64_t, uint64_t) noexcept { ranges++; },
+        [&]() noexcept { uploads++; });
+  };
+  {
+    TrackerHarness harness;
+    auto &tracker = harness.tracker;
+    upload(tracker, false);
+    Check(ranges == 1 && uploads == 1, "first upload did not copy the page");
+    upload(tracker, false);
+    Check(ranges == 0 && uploads == 2 && Protection(memory) == PAGE_READONLY,
+          "repeated upload copied or skipped its upload callback");
+    tracker.InvalidateRegion(address + 8, 8, [] {});
+    upload(tracker, false);
+    Check(ranges == 1, "upload after a CPU write was skipped");
+    upload(tracker, false);
+    Check(ranges == 0 && !tracker.IsRegionCpuModified(address, page_size),
+          "upload after a CPU write left the page dirty");
+
+    upload(tracker, true);
+    Check(tracker.IsRegionGpuModified(address, page_size) &&
+              Protection(memory) == PAGE_NOACCESS,
+          "written upload did not mark the page GPU-dirty");
+    tracker.UnmarkRegionAsGpuModified(address, page_size);
+    upload(tracker, true);
+    Check(tracker.IsRegionGpuModified(address, page_size) &&
+              Protection(memory) == PAGE_NOACCESS,
+          "written upload after an unmark was skipped");
+    tracker.ForEachDownloadRange<true>(address, page_size,
+                                       [](uint64_t, uint64_t) noexcept {});
+    Check(!tracker.IsRegionGpuModified(address, page_size),
+          "download did not clear the GPU-dirty page");
+    upload(tracker, true);
+    Check(tracker.IsRegionGpuModified(address, page_size) &&
+              Protection(memory) == PAGE_NOACCESS,
+          "written upload after a download was skipped");
+    upload(tracker, true);
+    Check(ranges == 0 && tracker.IsRegionGpuModified(address, page_size) &&
+              uploads == 8,
+          "repeated written upload changed the page's state");
+
+    tracker.UnmarkRegionAsGpuModified(address, page_size * 2);
+    tracker.MarkRegionAsCpuModified(address, page_size * 2);
+  }
+  {
+    TrackerHarness harness;
+    auto &tracker = harness.tracker;
+    upload(tracker, false);
+    Check(ranges == 1, "a new tracker skipped its first upload");
+
+    // Two CPU writes after uploads keep the page unwatched; it is then current
+    // only for the submission it was uploaded in.
+    tracker.InvalidateRegion(address + 8, 8, [] {});
+    upload(tracker, false);
+    tracker.InvalidateRegion(address + 8, 8, [] {});
+    Check(tracker.IsRegionUnwatched(address, page_size),
+          "a page written after two uploads was not kept unwatched");
+    upload(tracker, false);
+    Check(ranges == 1, "an unwatched page was not uploaded");
+    upload(tracker, false);
+    Check(ranges == 0, "an unwatched page was uploaded twice in a submission");
+    Libs::Graphics::AdvanceTrackerEpoch();
+    upload(tracker, false);
+    Check(ranges == 1,
+          "an unwatched page was not uploaded again in the next submission");
+    upload(tracker, false);
+    Check(ranges == 0, "an unwatched page was uploaded twice in a submission");
+
+    tracker.MarkRegionAsCpuModified(address, page_size * 2);
+  }
+  Release(memory);
+}
+
 void TestCleanUploadPreservesOwnership() {
   constexpr auto page_size = Libs::Graphics::TRACKER_PAGE_SIZE;
   constexpr auto region_size = Libs::Graphics::TRACKER_REGION_SIZE;
@@ -1233,6 +1319,7 @@ int main(int argc, char **argv) {
   TestQueriesDoNotRequireMappedOwnership();
   TestConcurrentRegionPublication();
   TestCpuDirtyUpload();
+  TestRepeatedUploadSkip();
   TestCleanUploadPreservesOwnership();
   TestRangeInvalidation();
   TestGpuReacquisitionAfterInvalidation();

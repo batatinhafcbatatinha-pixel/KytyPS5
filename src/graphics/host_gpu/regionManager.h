@@ -108,6 +108,12 @@ public:
 
 	KYTY_CLASS_NO_COPY(RegionManager);
 
+	// Grows after every change of the tracking state, made under the lock. Read without the
+	// lock: an equal value means nothing changed in between (see MemoryTracker::ForEachUploadRange).
+	[[nodiscard]] uint64_t Generation() const noexcept {
+		return m_generation.load(std::memory_order_acquire);
+	}
+
 	template <DirtySource source>
 	[[nodiscard]] bool IsModified(uint64_t offset, uint64_t size) const {
 		const auto [start, end] = GetPageRange(offset, size);
@@ -129,6 +135,9 @@ public:
 		}
 		return true;
 	}
+
+	// True when the region keeps some page unwatched: its CPU state then depends on the epoch.
+	[[nodiscard]] bool HasHot() const noexcept { return m_has_hot; }
 
 	// True when a page of the range is kept unwatched (see ChangeState): its writes raise no fault.
 	[[nodiscard]] bool IsHot(uint64_t offset, uint64_t size) const {
@@ -197,6 +206,7 @@ public:
 		} else {
 			UpdateProtection<enable, true>(changed);
 		}
+		Bump();
 	}
 
 	template <DirtySource source, bool clear, typename Func>
@@ -238,6 +248,7 @@ public:
 						bits.UnsetRange(first, last);
 					}
 					UpdateProtection<true, false>(watch);
+					Bump();
 					for (const auto [first, last]: upload) {
 						func(m_cpu_addr + first * TRACKER_PAGE_SIZE, (last - first) * TRACKER_PAGE_SIZE);
 					}
@@ -253,6 +264,7 @@ public:
 			} else {
 				UpdateProtection<false, true>(mask);
 			}
+			Bump();
 		}
 		for (const auto [first, last]: mask) {
 			func(m_cpu_addr + first * TRACKER_PAGE_SIZE, (last - first) * TRACKER_PAGE_SIZE);
@@ -262,6 +274,8 @@ public:
 	TrackingSpinLock lock;
 
 private:
+	void Bump() noexcept { m_generation.fetch_add(1, std::memory_order_release); }
+
 	// CPU-dirty pages are not write-watched; GPU-dirty pages are read-watched.
 	template <bool track, bool is_read>
 	void UpdateProtection(RegionBits& changed) {
@@ -316,6 +330,8 @@ private:
 	uint64_t     m_fresh_epoch = 0;
 	uint64_t     m_hot_since   = 0;
 	bool         m_has_hot     = false;
+	// Starts at 1, so a sum over existing regions is never 0.
+	std::atomic<uint64_t> m_generation {1};
 };
 
 } // namespace Libs::Graphics
