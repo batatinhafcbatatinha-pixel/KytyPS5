@@ -15,6 +15,7 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "kernel/memory.h"
 
+#include <future>
 #include <array>
 #include <cstdlib>
 #include <xxhash.h>
@@ -1260,28 +1261,63 @@ RangeSet BufferCache::ScanUnwatchedPages() {
 	const auto backing_size = LibKernel::Memory::GuestBackingSize();
 	RangeSet   watched;
 	RangeSet   changed;
+	// Pages in ascending order: the changed ones enter the set as runs.
+	std::vector<uint64_t> unwatched;
 	pages.ForEach([&](uint64_t begin, uint64_t end) {
-		for (auto page = begin; page < end; page += TRACKER_PAGE_SIZE) {
-			if (!m_memory_tracker.IsRegionUnwatched(page, TRACKER_PAGE_SIZE)) {
+		m_memory_tracker.ForEachPageUnwatched(begin, end - begin, [&](uint64_t page, bool is_unwatched) {
+			if (!is_unwatched) {
 				watched.Add(page, TRACKER_PAGE_SIZE);
 				m_bda_unwatched_hash.erase(page);
-				continue;
+				return;
 			}
-			// Most of these pages are not written between two submissions: the upload is
-			// skipped while a page's bytes are the ones queued last.
-			// Hashed in place through the backing view, which no page protection covers.
-			uint64_t backing = 0;
-			if (compare && backing_base != 0 && LibKernel::Memory::GuestBackingOffset(page, &backing) &&
-			    backing + TRACKER_PAGE_SIZE <= backing_size) {
-				const auto hash = XXH3_64bits(reinterpret_cast<const void*>(backing_base + backing),
-				                              TRACKER_PAGE_SIZE);
-				const auto [entry, inserted] = m_bda_unwatched_hash.try_emplace(page, hash);
-				if (!inserted && entry->second == hash) continue;
-				entry->second = hash;
-			}
-			changed.Add(page, TRACKER_PAGE_SIZE);
-		}
+			unwatched.push_back(page);
+		});
 	});
+	// Most of these pages are not written between two submissions: the upload is skipped while a
+	// page's bytes are the ones queued last. Hashed in place through the backing view, which no
+	// page protection covers, by several threads; a page outside the backing has no hash.
+	constexpr uint64_t NoHash = 0;
+	std::vector<std::pair<bool, uint64_t>> hashes(unwatched.size(), {false, NoHash});
+	if (compare && backing_base != 0) {
+		const auto hash_part = [&](size_t first, size_t last) {
+			for (auto index = first; index < last; ++index) {
+				uint64_t backing = 0;
+				if (LibKernel::Memory::GuestBackingOffset(unwatched[index], &backing) &&
+				    backing + TRACKER_PAGE_SIZE <= backing_size) {
+					hashes[index] = {true, XXH3_64bits(reinterpret_cast<const void*>(backing_base + backing),
+					                                   TRACKER_PAGE_SIZE)};
+				}
+			}
+		};
+		constexpr size_t Parts       = 4;
+		constexpr size_t MinPartSize = 256;
+		const auto       parts       = std::clamp<size_t>(unwatched.size() / MinPartSize, 1, Parts);
+		const auto       part_size   = (unwatched.size() + parts - 1) / parts;
+		std::vector<std::future<void>> helpers;
+		for (size_t part = 1; part < parts; ++part) {
+			helpers.push_back(std::async(std::launch::async, hash_part, part * part_size,
+			                             std::min(unwatched.size(), (part + 1) * part_size)));
+		}
+		hash_part(0, std::min(unwatched.size(), part_size));
+		for (auto& helper: helpers) {
+			helper.get();
+		}
+	}
+	uint64_t run_begin = 0, run_end = 0;
+	for (size_t index = 0; index < unwatched.size(); ++index) {
+		const auto page = unwatched[index];
+		if (hashes[index].first) {
+			const auto [entry, inserted] = m_bda_unwatched_hash.try_emplace(page, hashes[index].second);
+			if (!inserted && entry->second == hashes[index].second) continue;
+			entry->second = hashes[index].second;
+		}
+		if (page != run_end) {
+			if (run_end != run_begin) changed.Add(run_begin, run_end - run_begin);
+			run_begin = page;
+		}
+		run_end = page + TRACKER_PAGE_SIZE;
+	}
+	if (run_end != run_begin) changed.Add(run_begin, run_end - run_begin);
 	std::lock_guard lock(m_bda_sync_mutex);
 	// A page leaves once it is watched again; whatever was written before that is uploaded too.
 	watched.ForEach([&](uint64_t begin, uint64_t end) {
