@@ -1,19 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="670" viewBox="0 0 1000 670" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif">
-<rect width="1000" height="670" rx="6" fill="#0d1117" stroke="#30363d"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="516" viewBox="0 0 1000 516" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif">
+<rect width="1000" height="516" rx="6" fill="#0d1117" stroke="#30363d"/>
 <text x="150.0" y="28" font-size="16" font-weight="600" fill="#e6edf3" text-anchor="middle">Game</text>
 <text x="390.0" y="28" font-size="16" font-weight="600" fill="#e6edf3" text-anchor="middle">Status</text>
 <text x="740.0" y="28" font-size="16" font-weight="600" fill="#e6edf3" text-anchor="middle">In-game fps</text>
 <line x1="0" y1="44" x2="1000" y2="44" stroke="#30363d"/>
-<line x1="300" y1="0" x2="300" y2="670" stroke="#30363d"/>
-<line x1="480" y1="0" x2="480" y2="670" stroke="#30363d"/>
-<text x="18" y="113.0" font-size="16" font-weight="600" fill="#e6edf3">Control Ultimate Edition</text>
-<text x="18" y="135.0" font-size="12.5" fill="#e6edf3" fill-opacity=".85">PPSA01949</text>
-<rect x="320" y="91.0" width="93" height="24" rx="12" fill="#2ea043"/>
-<circle cx="333" cy="103.0" r="3" fill="#fff"/>
-<text x="342" y="107.5" font-size="13" font-weight="600" fill="#fff">Playable</text>
-<text x="320" y="139.0" font-size="12.5" fill="#e6edf3" fill-opacity=".85">measured 2026-11-14</text>
+<line x1="300" y1="0" x2="300" y2="516" stroke="#30363d"/>
+<line x1="480" y1="0" x2="480" y2="516" stroke="#30363d"/>
+<text x="18" y="246.0" font-size="16" font-weight="600" fill="#e6edf3">Grand Theft Auto V</text>
+<text x="18" y="268.0" font-size="12.5" fill="#e6edf3" fill-opacity=".85">PPSA04264</text>
+<rect x="320" y="224.0" width="93" height="24" rx="12" fill="#2ea043"/>
+<circle cx="333" cy="236.0" r="3" fill="#fff"/>
+<text x="342" y="240.5" font-size="13" font-weight="600" fill="#fff">Playable</text>
+<text x="320" y="272.0" font-size="12.5" fill="#e6edf3" fill-opacity=".85">measured 2026-11-20</text>
+<text x="320" y="292.0" font-size="12.5" fill="#e6edf3" fill-opacity=".85">build ab7149c5, no cap</text>
 <rect x="502" y="62" width="225" height="12" rx="6" fill="#1f4d2b"/>
-<rect x="502" y="62" width="167.6" height="12" rx="6" fill="#2ea043"/>
+<rect x="502" y="62" width="172.4" height="12" rx="6" fill="#2ea043"/>
 <text x="502.0" y="90" font-size="11" fill="#9198a1" text-anchor="start">0</text>
 <line x1="558.2" y1="62" x2="558.2" y2="74" stroke="#0d1117" stroke-opacity=".35"/>
 <text x="558.2" y="90" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
@@ -22,10 +23,10 @@
 <line x1="670.8" y1="62" x2="670.8" y2="74" stroke="#0d1117" stroke-opacity=".35"/>
 <text x="670.8" y="90" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
 <text x="727.0" y="90" font-size="11" fill="#9198a1" text-anchor="end">80</text>
-<text x="739" y="73" font-size="14" font-weight="600" fill="#2ea043">59.6 fps</text>
-<text x="739" y="90" font-size="11.5" fill="#9198a1">720p render + 720p output · 60 Hz cap</text>
-<rect x="502" y="108" width="225" height="12" rx="6" fill="#4d3a12"/>
-<rect x="502" y="108" width="144.3" height="12" rx="6" fill="#d29922"/>
+<text x="739" y="73" font-size="14" font-weight="600" fill="#2ea043">61.3 fps</text>
+<text x="739" y="90" font-size="11.5" fill="#9198a1">Performance · 720p · game&apos;s 60 limit</text>
+<rect x="502" y="108" width="225" height="12" rx="6" fill="#1f4d2b"/>
+<rect x="502" y="108" width="171.8" height="12" rx="6" fill="#2ea043"/>
 <text x="502.0" y="136" font-size="11" fill="#9198a1" text-anchor="start">0</text>
 <line x1="558.2" y1="108" x2="558.2" y2="120" stroke="#0d1117" stroke-opacity=".35"/>
 <text x="558.2" y="136" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
@@ -34,124 +35,91 @@
 <line x1="670.8" y1="108" x2="670.8" y2="120" stroke="#0d1117" stroke-opacity=".35"/>
 <text x="670.8" y="136" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
 <text x="727.0" y="136" font-size="11" fill="#9198a1" text-anchor="end">80</text>
-<text x="739" y="119" font-size="14" font-weight="600" fill="#d29922">51.3 fps</text>
-<text x="739" y="136" font-size="11.5" fill="#9198a1">720p render + 4K output</text>
-<text x="502" y="170" font-size="12" fill="#9198a1">First gameplay scene · RTX 3050 laptop + Ryzen 5 3600</text>
-<line x1="0" y1="186" x2="1000" y2="186" stroke="#30363d"/>
-<text x="18" y="413.0" font-size="16" font-weight="600" fill="#e6edf3">Grand Theft Auto V</text>
-<text x="18" y="435.0" font-size="12.5" fill="#e6edf3" fill-opacity=".85">PPSA04264</text>
-<rect x="320" y="391.0" width="93" height="24" rx="12" fill="#2ea043"/>
-<circle cx="333" cy="403.0" r="3" fill="#fff"/>
-<text x="342" y="407.5" font-size="13" font-weight="600" fill="#fff">Playable</text>
-<text x="320" y="439.0" font-size="12.5" fill="#e6edf3" fill-opacity=".85">measured 2026-11-20</text>
-<text x="320" y="459.0" font-size="12.5" fill="#e6edf3" fill-opacity=".85">build ab7149c5, no cap</text>
-<rect x="502" y="204" width="225" height="12" rx="6" fill="#1f4d2b"/>
-<rect x="502" y="204" width="172.4" height="12" rx="6" fill="#2ea043"/>
-<text x="502.0" y="232" font-size="11" fill="#9198a1" text-anchor="start">0</text>
-<line x1="558.2" y1="204" x2="558.2" y2="216" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="558.2" y="232" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
-<line x1="614.5" y1="204" x2="614.5" y2="216" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="614.5" y="232" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
-<line x1="670.8" y1="204" x2="670.8" y2="216" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="670.8" y="232" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
-<text x="727.0" y="232" font-size="11" fill="#9198a1" text-anchor="end">80</text>
-<text x="739" y="215" font-size="14" font-weight="600" fill="#2ea043">61.3 fps</text>
-<text x="739" y="232" font-size="11.5" fill="#9198a1">Performance · 720p · game's 60 limit</text>
-<rect x="502" y="250" width="225" height="12" rx="6" fill="#1f4d2b"/>
-<rect x="502" y="250" width="164.8" height="12" rx="6" fill="#2ea043"/>
-<text x="502.0" y="278" font-size="11" fill="#9198a1" text-anchor="start">0</text>
-<line x1="558.2" y1="250" x2="558.2" y2="262" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="558.2" y="278" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
-<line x1="614.5" y1="250" x2="614.5" y2="262" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="614.5" y="278" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
-<line x1="670.8" y1="250" x2="670.8" y2="262" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="670.8" y="278" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
-<text x="727.0" y="278" font-size="11" fill="#9198a1" text-anchor="end">80</text>
-<text x="739" y="261" font-size="14" font-weight="600" fill="#2ea043">58.6 fps</text>
-<text x="739" y="278" font-size="11.5" fill="#9198a1">Performance · 1080p · game's 60 limit</text>
-<rect x="502" y="296" width="225" height="12" rx="6" fill="#4d3a12"/>
-<rect x="502" y="296" width="77.1" height="12" rx="6" fill="#d29922"/>
-<text x="502.0" y="324" font-size="11" fill="#9198a1" text-anchor="start">0</text>
-<line x1="558.2" y1="296" x2="558.2" y2="308" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="558.2" y="324" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
-<line x1="614.5" y1="296" x2="614.5" y2="308" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="614.5" y="324" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
-<line x1="670.8" y1="296" x2="670.8" y2="308" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="670.8" y="324" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
-<text x="727.0" y="324" font-size="11" fill="#9198a1" text-anchor="end">80</text>
-<text x="739" y="307" font-size="14" font-weight="600" fill="#d29922">27.4 fps</text>
-<text x="739" y="324" font-size="11.5" fill="#9198a1">Performance · 4K (1440p + 4K passes)</text>
-<rect x="502" y="342" width="225" height="12" rx="6" fill="#1f4d2b"/>
-<rect x="502" y="342" width="171.8" height="12" rx="6" fill="#2ea043"/>
-<text x="502.0" y="370" font-size="11" fill="#9198a1" text-anchor="start">0</text>
-<line x1="558.2" y1="342" x2="558.2" y2="354" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="558.2" y="370" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
-<line x1="614.5" y1="342" x2="614.5" y2="354" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="614.5" y="370" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
-<line x1="670.8" y1="342" x2="670.8" y2="354" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="670.8" y="370" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
-<text x="727.0" y="370" font-size="11" fill="#9198a1" text-anchor="end">80</text>
-<text x="739" y="353" font-size="14" font-weight="600" fill="#2ea043">61.1 fps</text>
-<text x="739" y="370" font-size="11.5" fill="#9198a1">Performance RT · 720p · game's 60 limit</text>
-<rect x="502" y="388" width="225" height="12" rx="6" fill="#1f4d2b"/>
-<rect x="502" y="388" width="165.9" height="12" rx="6" fill="#2ea043"/>
-<text x="502.0" y="416" font-size="11" fill="#9198a1" text-anchor="start">0</text>
-<line x1="558.2" y1="388" x2="558.2" y2="400" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="558.2" y="416" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
-<line x1="614.5" y1="388" x2="614.5" y2="400" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="614.5" y="416" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
-<line x1="670.8" y1="388" x2="670.8" y2="400" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="670.8" y="416" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
-<text x="727.0" y="416" font-size="11" fill="#9198a1" text-anchor="end">80</text>
-<text x="739" y="399" font-size="14" font-weight="600" fill="#2ea043">59.0 fps</text>
-<text x="739" y="416" font-size="11.5" fill="#9198a1">Performance RT · 1080p · game's 60 limit</text>
-<rect x="502" y="434" width="225" height="12" rx="6" fill="#4d3a12"/>
-<rect x="502" y="434" width="76.8" height="12" rx="6" fill="#d29922"/>
-<text x="502.0" y="462" font-size="11" fill="#9198a1" text-anchor="start">0</text>
-<line x1="558.2" y1="434" x2="558.2" y2="446" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="558.2" y="462" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
-<line x1="614.5" y1="434" x2="614.5" y2="446" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="614.5" y="462" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
-<line x1="670.8" y1="434" x2="670.8" y2="446" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="670.8" y="462" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
-<text x="727.0" y="462" font-size="11" fill="#9198a1" text-anchor="end">80</text>
-<text x="739" y="445" font-size="14" font-weight="600" fill="#d29922">27.3 fps</text>
-<text x="739" y="462" font-size="11.5" fill="#9198a1">Performance RT · 4K (1440p + 4K passes)</text>
-<rect x="502" y="480" width="225" height="12" rx="6" fill="#5c1f1c"/>
-<rect x="502" y="480" width="46.1" height="12" rx="6" fill="#f85149"/>
-<text x="502.0" y="508" font-size="11" fill="#9198a1" text-anchor="start">0</text>
-<line x1="558.2" y1="480" x2="558.2" y2="492" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="558.2" y="508" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
-<line x1="614.5" y1="480" x2="614.5" y2="492" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="614.5" y="508" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
-<line x1="670.8" y1="480" x2="670.8" y2="492" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="670.8" y="508" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
-<text x="727.0" y="508" font-size="11" fill="#9198a1" text-anchor="end">80</text>
-<text x="739" y="491" font-size="14" font-weight="600" fill="#f85149">16.4 fps</text>
-<text x="739" y="508" font-size="11.5" fill="#9198a1">Fidelity · 720p · no limit reached</text>
-<rect x="502" y="526" width="225" height="12" rx="6" fill="#5c1f1c"/>
-<rect x="502" y="526" width="37.1" height="12" rx="6" fill="#f85149"/>
-<text x="502.0" y="554" font-size="11" fill="#9198a1" text-anchor="start">0</text>
-<line x1="558.2" y1="526" x2="558.2" y2="538" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="558.2" y="554" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
-<line x1="614.5" y1="526" x2="614.5" y2="538" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="614.5" y="554" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
-<line x1="670.8" y1="526" x2="670.8" y2="538" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="670.8" y="554" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
-<text x="727.0" y="554" font-size="11" fill="#9198a1" text-anchor="end">80</text>
-<text x="739" y="537" font-size="14" font-weight="600" fill="#f85149">13.2 fps</text>
-<text x="739" y="554" font-size="11.5" fill="#9198a1">Fidelity · 1080p · no limit reached</text>
-<rect x="502" y="572" width="225" height="12" rx="6" fill="#5c1f1c"/>
-<rect x="502" y="572" width="15.7" height="12" rx="6" fill="#f85149"/>
-<text x="502.0" y="600" font-size="11" fill="#9198a1" text-anchor="start">0</text>
-<line x1="558.2" y1="572" x2="558.2" y2="584" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="558.2" y="600" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
-<line x1="614.5" y1="572" x2="614.5" y2="584" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="614.5" y="600" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
-<line x1="670.8" y1="572" x2="670.8" y2="584" stroke="#0d1117" stroke-opacity=".35"/>
-<text x="670.8" y="600" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
-<text x="727.0" y="600" font-size="11" fill="#9198a1" text-anchor="end">80</text>
-<text x="739" y="583" font-size="14" font-weight="600" fill="#f85149">5.6 fps</text>
-<text x="739" y="600" font-size="11.5" fill="#9198a1">Fidelity · 4K (3840x2160 passes)</text>
-<text x="502" y="652" font-size="12" fill="#9198a1">Prologue bank scene · no fps cap · RTX 3050 laptop + Ryzen 5 3600</text>
+<text x="739" y="119" font-size="14" font-weight="600" fill="#2ea043">61.1 fps</text>
+<text x="739" y="136" font-size="11.5" fill="#9198a1">Performance RT · 720p · game&apos;s 60 limit</text>
+<rect x="502" y="154" width="225" height="12" rx="6" fill="#1f4d2b"/>
+<rect x="502" y="154" width="165.9" height="12" rx="6" fill="#2ea043"/>
+<text x="502.0" y="182" font-size="11" fill="#9198a1" text-anchor="start">0</text>
+<line x1="558.2" y1="154" x2="558.2" y2="166" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="558.2" y="182" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
+<line x1="614.5" y1="154" x2="614.5" y2="166" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="614.5" y="182" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
+<line x1="670.8" y1="154" x2="670.8" y2="166" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="670.8" y="182" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
+<text x="727.0" y="182" font-size="11" fill="#9198a1" text-anchor="end">80</text>
+<text x="739" y="165" font-size="14" font-weight="600" fill="#2ea043">59.0 fps</text>
+<text x="739" y="182" font-size="11.5" fill="#9198a1">Performance RT · 1080p · game&apos;s 60 limit</text>
+<rect x="502" y="200" width="225" height="12" rx="6" fill="#1f4d2b"/>
+<rect x="502" y="200" width="164.8" height="12" rx="6" fill="#2ea043"/>
+<text x="502.0" y="228" font-size="11" fill="#9198a1" text-anchor="start">0</text>
+<line x1="558.2" y1="200" x2="558.2" y2="212" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="558.2" y="228" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
+<line x1="614.5" y1="200" x2="614.5" y2="212" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="614.5" y="228" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
+<line x1="670.8" y1="200" x2="670.8" y2="212" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="670.8" y="228" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
+<text x="727.0" y="228" font-size="11" fill="#9198a1" text-anchor="end">80</text>
+<text x="739" y="211" font-size="14" font-weight="600" fill="#2ea043">58.6 fps</text>
+<text x="739" y="228" font-size="11.5" fill="#9198a1">Performance · 1080p · game&apos;s 60 limit</text>
+<rect x="502" y="246" width="225" height="12" rx="6" fill="#4d3a12"/>
+<rect x="502" y="246" width="77.1" height="12" rx="6" fill="#d29922"/>
+<text x="502.0" y="274" font-size="11" fill="#9198a1" text-anchor="start">0</text>
+<line x1="558.2" y1="246" x2="558.2" y2="258" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="558.2" y="274" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
+<line x1="614.5" y1="246" x2="614.5" y2="258" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="614.5" y="274" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
+<line x1="670.8" y1="246" x2="670.8" y2="258" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="670.8" y="274" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
+<text x="727.0" y="274" font-size="11" fill="#9198a1" text-anchor="end">80</text>
+<text x="739" y="257" font-size="14" font-weight="600" fill="#d29922">27.4 fps</text>
+<text x="739" y="274" font-size="11.5" fill="#9198a1">Performance · 4K (1440p + 4K passes)</text>
+<rect x="502" y="292" width="225" height="12" rx="6" fill="#4d3a12"/>
+<rect x="502" y="292" width="76.8" height="12" rx="6" fill="#d29922"/>
+<text x="502.0" y="320" font-size="11" fill="#9198a1" text-anchor="start">0</text>
+<line x1="558.2" y1="292" x2="558.2" y2="304" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="558.2" y="320" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
+<line x1="614.5" y1="292" x2="614.5" y2="304" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="614.5" y="320" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
+<line x1="670.8" y1="292" x2="670.8" y2="304" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="670.8" y="320" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
+<text x="727.0" y="320" font-size="11" fill="#9198a1" text-anchor="end">80</text>
+<text x="739" y="303" font-size="14" font-weight="600" fill="#d29922">27.3 fps</text>
+<text x="739" y="320" font-size="11.5" fill="#9198a1">Performance RT · 4K (1440p + 4K passes)</text>
+<rect x="502" y="338" width="225" height="12" rx="6" fill="#5c1f1c"/>
+<rect x="502" y="338" width="46.1" height="12" rx="6" fill="#f85149"/>
+<text x="502.0" y="366" font-size="11" fill="#9198a1" text-anchor="start">0</text>
+<line x1="558.2" y1="338" x2="558.2" y2="350" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="558.2" y="366" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
+<line x1="614.5" y1="338" x2="614.5" y2="350" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="614.5" y="366" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
+<line x1="670.8" y1="338" x2="670.8" y2="350" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="670.8" y="366" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
+<text x="727.0" y="366" font-size="11" fill="#9198a1" text-anchor="end">80</text>
+<text x="739" y="349" font-size="14" font-weight="600" fill="#f85149">16.4 fps</text>
+<text x="739" y="366" font-size="11.5" fill="#9198a1">Fidelity · 720p · no limit reached</text>
+<rect x="502" y="384" width="225" height="12" rx="6" fill="#5c1f1c"/>
+<rect x="502" y="384" width="37.1" height="12" rx="6" fill="#f85149"/>
+<text x="502.0" y="412" font-size="11" fill="#9198a1" text-anchor="start">0</text>
+<line x1="558.2" y1="384" x2="558.2" y2="396" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="558.2" y="412" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
+<line x1="614.5" y1="384" x2="614.5" y2="396" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="614.5" y="412" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
+<line x1="670.8" y1="384" x2="670.8" y2="396" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="670.8" y="412" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
+<text x="727.0" y="412" font-size="11" fill="#9198a1" text-anchor="end">80</text>
+<text x="739" y="395" font-size="14" font-weight="600" fill="#f85149">13.2 fps</text>
+<text x="739" y="412" font-size="11.5" fill="#9198a1">Fidelity · 1080p · no limit reached</text>
+<rect x="502" y="430" width="225" height="12" rx="6" fill="#5c1f1c"/>
+<rect x="502" y="430" width="15.8" height="12" rx="6" fill="#f85149"/>
+<text x="502.0" y="458" font-size="11" fill="#9198a1" text-anchor="start">0</text>
+<line x1="558.2" y1="430" x2="558.2" y2="442" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="558.2" y="458" font-size="11" fill="#9198a1" text-anchor="middle">20</text>
+<line x1="614.5" y1="430" x2="614.5" y2="442" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="614.5" y="458" font-size="11" fill="#9198a1" text-anchor="middle">40</text>
+<line x1="670.8" y1="430" x2="670.8" y2="442" stroke="#0d1117" stroke-opacity=".35"/>
+<text x="670.8" y="458" font-size="11" fill="#9198a1" text-anchor="middle">60</text>
+<text x="727.0" y="458" font-size="11" fill="#9198a1" text-anchor="end">80</text>
+<text x="739" y="441" font-size="14" font-weight="600" fill="#f85149">5.6 fps</text>
+<text x="739" y="458" font-size="11.5" fill="#9198a1">Fidelity · 4K (3840x2160 passes)</text>
+<text x="502" y="498" font-size="12" fill="#9198a1">Prologue bank scene · no fps cap · RTX 3050 laptop + Ryzen 5 3600</text>
 </svg>

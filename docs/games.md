@@ -4,7 +4,7 @@ Measured with this fork on an **RTX 3050 laptop GPU (8 GB) + Ryzen 5 3600**. The
 with a 60 fps limit. The *Grand Theft Auto V* matrix below was measured without any display or flip-rate cap
 (`--ignore-flip-rate --present-mode Immediate`, and `--vblank-frequency 360` for the Performance modes).
 
-![In-game fps of Control Ultimate Edition and Grand Theft Auto V](fps/fps-games.svg)
+![In-game fps of Grand Theft Auto V](fps/fps-games.svg)
 
 | Game | Scene | Setting | fps | Picture |
 | --- | --- | --- | --- | --- |
