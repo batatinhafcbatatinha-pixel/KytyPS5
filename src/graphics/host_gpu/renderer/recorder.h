@@ -3,7 +3,7 @@
 
 #include "graphics/host_gpu/vulkanCommon.h"
 
-// Vulkan commands of the GPU thread recorded on their own thread (KYTY_RECORDER=1 turns it on).
+// Vulkan commands of the GPU thread recorded on their own thread (on by default; KYTY_RECORDER=0 turns it off).
 // Ported from AnyPS5 (glue/Recorder.cpp). See recorder.cpp.
 namespace Libs::Graphics::Recorder {
 

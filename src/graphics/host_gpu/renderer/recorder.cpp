@@ -13,7 +13,7 @@
 // Code that records with its own function pointers (upscaler SDKs, ImGui) must call Sync() on
 // the command buffer first.
 //
-// Off by default; KYTY_RECORDER=1 turns it on.
+// On by default; KYTY_RECORDER=0 turns it off.
 
 #include "graphics/host_gpu/renderer/recorder.h"
 
@@ -1250,7 +1250,7 @@ void Install() {
 		return;
 	}
 	const char* setting = std::getenv("KYTY_RECORDER");
-	if (setting == nullptr || std::strcmp(setting, "1") != 0) {
+	if (setting != nullptr && std::strcmp(setting, "0") == 0) {
 		return;
 	}
 	auto& d = VULKAN_HPP_DEFAULT_DISPATCHER;
@@ -1302,7 +1302,7 @@ void Install() {
 #undef KYTY_RECORDER_SET_ALIAS
 
 	Log::WriteToConsoleAndLog("[recorder] Vulkan commands of the GPU thread are recorded on their own thread "
-	                          "(KYTY_RECORDER=1)\n");
+	                          "(KYTY_RECORDER=0 turns it off)\n");
 }
 
 // NOLINTEND(cppcoreguidelines-macro-usage)
