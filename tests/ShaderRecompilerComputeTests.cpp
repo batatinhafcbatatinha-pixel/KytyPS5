@@ -2982,6 +2982,66 @@ public:
     std::printf("[host]    %-32s ok\n", name);
   }
 
+  void CheckSchedulerPriorityRanges() {
+    constexpr const char *name = "SchedulerPriorityRanges";
+    EnsureRuntimeContext();
+    CommandScheduler scheduler(Renderer(), m_runtime_context);
+    HW::Context registers{};
+    HW::UserConfig user_config{};
+    HW::Shader shaders{};
+    scheduler.Begin(registers, user_config, shaders);
+    constexpr GuestRange unmapped{0x100000000ull, 0x10000};
+    const auto pending = [&](GuestRange range) {
+      return scheduler.HasPendingPriorityOperations(range);
+    };
+    Require(name, "idle", !pending(unmapped), "an idle scheduler reported a hazard");
+
+    // Callbacks of the open tick stay queued (or wait as the running one) until it is flushed.
+    scheduler.DeferPriorityOperation([] {}, GuestRange{});
+    scheduler.DeferPriorityOperation([] {}, GuestRange{unmapped.End(), 0x1000});
+    scheduler.DeferPriorityOperation([] {}, GuestRange{unmapped.address - 0x1000, 0x1000});
+    Require(name, "disjoint",
+            scheduler.HasPendingPriorityOperations() && !pending(unmapped),
+            "host-only or adjacent callbacks were reported as hazards");
+    Require(name, "overlap",
+            pending({unmapped.End(), 1}) && pending({unmapped.address - 1, 2}),
+            "an overlapping callback was not reported");
+    Require(name, "unchecked range", pending(GuestRange{}),
+            "a range the check cannot use did not fall back to every callback");
+    scheduler.DeferPriorityOperation([] {});
+    Require(name, "unannotated", pending(unmapped),
+            "a callback without a range did not alias all guest memory");
+    scheduler.Flush();
+    scheduler.DrainPriorityOperations();
+    Require(name, "drained", !pending(unmapped), "drained callbacks were still reported");
+
+    scheduler.DeferPriorityOperation([] {}, GuestRange{1ull << 41u, 0x1000});
+    Require(name, "invalid annotation", pending(unmapped),
+            "a callback with an invalid range was not treated as aliasing all memory");
+    scheduler.Flush();
+    scheduler.DrainPriorityOperations();
+
+    // The running callback stays a hazard until it returns, after its tick completed.
+    std::binary_semaphore entered{0};
+    std::binary_semaphore release{0};
+    scheduler.DeferPriorityOperation(
+        [&] {
+          entered.release();
+          release.acquire();
+        },
+        GuestRange{unmapped.address + 0x100, 0x100});
+    scheduler.Flush();
+    entered.acquire();
+    Require(name, "running", pending(unmapped) && !pending({unmapped.End(), 0x1000}),
+            "the running callback's range was not reported, or reported too wide");
+    release.release();
+    scheduler.DrainPriorityOperations();
+    Require(name, "returned", !pending(unmapped),
+            "a returned callback was still reported");
+    scheduler.Finish();
+    std::printf("[host]    %-32s ok\n", name);
+  }
+
   void CheckGpuMappedRangeLifecycle() {
     EnsureRuntimeContext();
     RenderContext context(m_runtime_context);
@@ -57444,6 +57504,7 @@ int main(int argc, char **argv) {
     VulkanHarness vulkan;
     vulkan.CheckSchedulerTimeline();
     vulkan.CheckSchedulerIdlePolling();
+    vulkan.CheckSchedulerPriorityRanges();
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--host-image-allocation-only") == 0) {
@@ -58166,6 +58227,7 @@ int main(int argc, char **argv) {
   CheckPs5GameExampleImageClearRuntimeShape();
   vulkan.CheckSchedulerTimeline();
   vulkan.CheckSchedulerIdlePolling();
+  vulkan.CheckSchedulerPriorityRanges();
   vulkan.CheckHostImageAllocation();
   vulkan.CheckVideoOutHdr10ToSdr();
   vulkan.CheckDescriptorHeapLargeSet();
