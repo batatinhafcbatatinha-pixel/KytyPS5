@@ -213,6 +213,33 @@ ImageId TextureCache::InsertImage(const ImageInfo& info) {
 	return id;
 }
 
+TextureCache::RegisteredPageCounts::~RegisteredPageCounts() {
+	for (auto& leaf: m_leaves) {
+		delete leaf.load(std::memory_order_relaxed);
+	}
+}
+
+void TextureCache::RegisteredPageCounts::Add(size_t page, int32_t delta) {
+	auto& slot = m_leaves[page >> LeafBits];
+	auto* leaf = slot.load(std::memory_order_relaxed);
+	if (leaf == nullptr) {
+		leaf = new Leaf {};
+		slot.store(leaf, std::memory_order_release);
+	}
+	(*leaf)[page & (LeafSize - 1)].fetch_add(static_cast<uint32_t>(delta),
+	                                         std::memory_order_release);
+}
+
+bool TextureCache::RegisteredPageCounts::Any(size_t first, size_t last_exclusive) const noexcept {
+	for (auto page = first; page < last_exclusive; page++) {
+		const auto* leaf = m_leaves[page >> LeafBits].load(std::memory_order_acquire);
+		if (leaf != nullptr && (*leaf)[page & (LeafSize - 1)].load(std::memory_order_acquire) != 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void TextureCache::RegisterImage(ImageId id) {
 	auto& image = m_slot_images[id];
 	const auto& data  = image.info.data;
@@ -224,8 +251,10 @@ void TextureCache::RegisterImage(ImageId id) {
 	}
 	const BucketEntry entry {
 	    .address = data.address, .size = static_cast<uint32_t>(data.size), .id = id};
+	// Counted before the image can be tracked, so a write fault on a page it protects finds it.
 	ForEachPage(data.address, data.size, [this, &entry](uint64_t page) {
 		m_image_page_table[page].entries.push_back(entry);
+		m_registered_pages.Add(page, 1);
 	});
 	image.registered = true;
 	image.lru_id     = m_lru_cache.Insert(id, m_gc_tick);
@@ -247,6 +276,7 @@ void TextureCache::UnregisterImage(ImageId id) {
 			EXIT("TextureCache: image missing from page owner index\n");
 		}
 		entries.erase(entry);
+		m_registered_pages.Add(page, -1);
 	});
 	m_lru_cache.Free(image.lru_id);
 	m_total_used_memory -= image.AccountedSize();
@@ -2042,9 +2072,17 @@ bool TextureCache::CopyToImage(uint64_t address, uint64_t source, uint64_t size)
 }
 
 void TextureCache::InvalidateMemory(uint64_t address, uint64_t size) {
+	const auto page_begin = Common::AlignDown(address, TRACKER_PAGE_SIZE);
+	const auto page_end   = Common::AlignUp(address + size, TRACKER_PAGE_SIZE);
+	// Most CPU writes land on pages no image uses: they have nothing to invalidate and need not
+	// wait for the lock the GPU thread holds while it records. Images count their pages before
+	// they are tracked, so a write a registration races with behaves as one just before it.
+	if (ImagePageTable::PageRange pages {};
+	    ImagePageTable::TryGetPageRange(page_begin, page_end - page_begin, pages) &&
+	    !m_registered_pages.Any(pages.first, pages.last_exclusive)) {
+		return;
+	}
 	std::scoped_lock lock {m_lock};
-	const auto       page_begin = Common::AlignDown(address, TRACKER_PAGE_SIZE);
-	const auto       page_end   = Common::AlignUp(address + size, TRACKER_PAGE_SIZE);
 	Common::SmallVector<ImageId, 8> image_ids;
 	ForEachImageInRegion(page_begin, page_end - page_begin,
 	                     [&](ImageId id, Image&) { image_ids.push_back(id); });
