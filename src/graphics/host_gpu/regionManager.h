@@ -79,7 +79,13 @@ static_assert(std::atomic_uint32_t::is_always_lock_free);
 // Guest command submissions processed so far: CPU writes to memory a submission reads land
 // before it is submitted, so a page uploaded during one submission stays current for it.
 inline std::atomic<uint64_t> g_tracker_epoch {1};
-inline std::atomic<bool>     g_sticky_pages {true};
+// Pages the guest rewrites every frame can be left unwatched and uploaded once per submission
+// (KYTY_STICKY_PAGES=1). That relies on the CPU writing what a submission reads before the
+// submission; one title writes such pages later and its compute work read stale bytes, so it is off.
+inline std::atomic<bool>     g_sticky_pages {[] {
+	const char* value = std::getenv("KYTY_STICKY_PAGES");
+	return value != nullptr && value[0] == '1';
+}()};
 // Frames the guest has submitted for display so far.
 inline std::atomic<uint64_t> g_tracker_frame {1};
 
