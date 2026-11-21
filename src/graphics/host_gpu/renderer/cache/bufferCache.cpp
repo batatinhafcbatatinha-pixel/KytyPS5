@@ -1069,6 +1069,14 @@ void BufferCache::CompleteEagerDownloads(uint64_t vaddr, uint64_t size, bool fin
 	// of overlapping bytes: those land first (or the side one waits for a later call), so an older
 	// copy never overwrites a newer one.
 	std::vector<uint8_t> side_ready(m_eager_downloads.size(), 0);
+	// The newest tick whose priority operations are known to have run.
+	uint64_t   published_tick = 0;
+	const auto published      = [&](uint64_t tick) {
+		if (tick <= published_tick) return true;
+		if (!m_scheduler.PriorityOperationsDone(tick)) return false;
+		published_tick = tick;
+		return true;
+	};
 	for (size_t index = 0; index < m_eager_downloads.size(); ++index) {
 		const auto& side = m_eager_downloads[index];
 		if (side.side == 0 || side.end <= vaddr || end <= side.begin ||
@@ -1114,6 +1122,12 @@ void BufferCache::CompleteEagerDownloads(uint64_t vaddr, uint64_t size, bool fin
 		}
 		// The timeline was read above; a download finishing since is released by a later call.
 		if (side_only || (finished_only && !master.IsFree(download.tick))) {
+			return false;
+		}
+		// Its bytes reach guest memory in a priority operation of its tick. Until that has run the
+		// pages keep faulting: a guest write made after their release would be overwritten by it,
+		// and a guest read would see the bytes from before the GPU wrote them.
+		if (finished_only && !published(download.tick)) {
 			return false;
 		}
 		if (download.tick > waited) {

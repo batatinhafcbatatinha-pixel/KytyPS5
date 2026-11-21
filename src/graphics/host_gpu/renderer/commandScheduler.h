@@ -38,6 +38,8 @@ public:
 	void                      PopPendingOperations();
 	void                      DrainPriorityOperations();
 	void                      WaitPriorityOperations(uint64_t tick);
+	// Whether every priority operation of `tick` and earlier ticks has run, without waiting.
+	[[nodiscard]] bool        PriorityOperationsDone(uint64_t tick);
 	// Guest-memory completions use the priority queue; normal callbacks maintain GPU resources.
 	void                      DeferOperation(Common::UniqueFunction<void>&& operation);
 	// range covers every guest access of the callback: an empty range declares a host-only
