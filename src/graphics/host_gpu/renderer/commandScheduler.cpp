@@ -167,6 +167,17 @@ void CommandScheduler::Flush(SubmitInfo& submit) {
 	BeginNext();
 }
 
+void CommandScheduler::SubmitIfIdle() {
+	// Fewer dispatches cost more in submission than the idle time they save (8 measured best of
+	// 1, 4, 8 and 16 on one title).
+	constexpr uint32_t MinDispatches = 8;
+	if (m_in_side || !Active() || m_command.IsInvalid() || ++m_batch_dispatches < MinDispatches ||
+	    !m_master.IsFree(CurrentTick() - 1)) {
+		return;
+	}
+	Flush();
+}
+
 void CommandScheduler::Finish() {
 	CheckActive();
 	if (!m_command.IsInvalid()) {
@@ -472,6 +483,7 @@ CommandBuffer& CommandScheduler::BeginCommand() {
 	EXIT_IF(!m_command.IsInvalid());
 	m_command.m_buffer = m_command_pool.Commit();
 	m_command.Begin();
+	m_batch_dispatches = 0;
 	m_dynamic_state.Invalidate();
 	return m_command;
 }
