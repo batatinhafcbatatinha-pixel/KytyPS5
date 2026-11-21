@@ -3974,6 +3974,8 @@ void TestAmmRemapIntoPrt() {
 	        "set previous backing buffer");
 	CheckOk(test, remap(commands.data.data(), target, old, block, SceKernelProtCpuRead, all),
 	        "append previous header command");
+	CheckOk(test, commands.Find<int(KYTY_SYSV_ABI*)(void*)>("8aI7R7WaOlc")(
+	                  commands.header.data()), "initialize current header");
 	CheckOk(test, set_buffer(commands.header.data(), commands.data.data(), sizeof(commands.data)),
 	        "reuse previous header as backing buffer");
 
