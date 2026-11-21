@@ -11,26 +11,15 @@ here unchanged. This page only says what this fork changes.
 > not distribute games or copyrighted system software. Use only game files that you have obtained
 > legally.
 
-## Control: 60 fps at 720p
+## Frame rate
 
-> *title B runs at 60 fps** at 1280x720 with this fork on an **RTX 3050 laptop GPU
-> (8 GB) + Ryzen 5 3600**. 60 fps is the display's limit. Right picture, no device loss.
+Measured with this fork on an RTX 3050 laptop GPU (8 GB) + Ryzen 5 3600
+
+![In-game fps](docs/fps/fps-games.svg)
 
 ![In-game fps of title B: 59.6 fps at 720p, 51.3 fps with 4K output](docs/fps/fps-control.svg)
 
-First gameplay scene, six 10 s windows (59.0-59.9 fps). With only its render size at 720p and the output left at
-3840x2160 it gives 51.3 fps. Right picture in both.
-
 **[See more games →](docs/games.md)**
-
-**720p:** put `render-720p-output-720p.json` from
-[recomp-patches](https://github.com/batatinhafcbatatinha-pixel/recomp-patches) (`ps5/TITLE_ID/`)
-through that repository's `python tools/recomp_patch.py kyty <patch.json> <out.json>` and start the game with `--game-patch <out.json>`.
-The patches hold addresses and values only (no game code); the emulator writes them into the loaded module, and
-"held" values are written again whenever the game writes its own. A 1080p variant exists too.
-
-The same renderer now also drives [AnyPS5](https://github.com/batatinhafcbatatinha-pixel/AnyPS5)'s new GPU engine,
-where the game code runs natively.
 
 ## What differs from upstream
 
