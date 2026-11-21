@@ -222,7 +222,7 @@ void DefineImageArray(EmitterState& state, ImageDefinition& definition, const IR
 	definition.pointer_type = TypePointer(state, spv::StorageClassUniformConstant, definition.type);
 }
 
-void DefineDescriptors(EmitterState& state, uint32_t push_data_ceiling) {
+void DefineDescriptors(EmitterState& state) {
 	using Kind = IR::DescriptorBindingKind;
 	auto& info = state.program.info;
 	auto& bindings = state.program.bindings;
@@ -284,8 +284,7 @@ void DefineDescriptors(EmitterState& state, uint32_t push_data_ceiling) {
 		bindings.memory_offset_dword += 2u;
 	}
 	bindings.push_data_start_dword =
-	    IR::PushData::StartFor(state.program.stage, bindings.push_data_start_dword,
-	                           bindings.ShaderDataDwords(), push_data_ceiling);
+	    state.push_data.StartFor(bindings.ShaderDataDwords(), state.program.stage);
 	counts[static_cast<size_t>(Kind::ShaderData)] =
 	    bindings.ShaderDataDwords() != 0 && !bindings.UsesPushData();
 	if (state.program.bindings.UsesPushData() || state.program.stage == ShaderType::Mesh ||
@@ -734,13 +733,13 @@ void DefineOutputs(EmitterState& state) {
 
 } // namespace
 
-void DefineModule(EmitterState& state, uint32_t push_data_ceiling) {
+void DefineModule(EmitterState& state) {
 	state.interface_variables.reserve(state.program.info.inputs.size() +
 	                                  state.program.info.outputs.size());
 	DefineInputs(state);
 	DefineOutputs(state);
 	DefineTessellationInterfaces(state);
-	DefineDescriptors(state, push_data_ceiling);
+	DefineDescriptors(state);
 	if (state.program.info.function_lds) {
 		state.lds_variable = state.builder.AllocateId();
 	}

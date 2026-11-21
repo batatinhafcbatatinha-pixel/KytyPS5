@@ -93,6 +93,7 @@ struct EmitterState {
 	IR::Program&                                     program;
 	ShaderStageInputInfo                             input_info;
 	const Profile&                                      profile;
+	IR::PushData::Window                            push_data;
 	uint32_t                                        debug_source = 0;
 	uint32_t                                        void_type = 0;
 	uint32_t                                        bool_type = 0;
@@ -375,7 +376,7 @@ uint32_t ConstantU32CompositeZero(EmitterState& state, uint32_t components);
 
 uint32_t DefineInterfaceVariable(EmitterState& state, uint32_t type, spv::StorageClass storage,
                                  const char* name);
-void     DefineModule(EmitterState& state, uint32_t push_data_ceiling);
+void     DefineModule(EmitterState& state);
 void     DefineTessellationInterfaces(EmitterState& state);
 void     DefineTessellationExecutionModes(EmitterState& state);
 void     DefineMeshOutputs(EmitterState& state, uint32_t clip_distance_count,

@@ -20,8 +20,8 @@ namespace {
 } // namespace
 
 std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo input_info,
-                                  uint32_t push_data_start_dword, const Profile& profile,
-                                  bool emit_debug_info, uint32_t push_data_ceiling) {
+                                  IR::PushData::Window push_data, const Profile& profile,
+                                  bool emit_debug_info) {
 	using namespace Emitter;
 
 	if (!program.srt_plan_complete || !program.resource_tracking_complete ||
@@ -29,8 +29,9 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 		Fail(program, "SPIR-V emitter requires a fully planned native shader program");
 	}
 	IR::ValidateProgram(program);
-	program.bindings = {.push_data_start_dword = push_data_start_dword};
+	program.bindings = {};
 	EmitterState state(program, input_info, profile);
+	state.push_data = push_data;
 	if (emit_debug_info) {
 		char name[64];
 		std::snprintf(name, sizeof(name), "rdna2-%016" PRIx64 "-block-byte-pc-plus-one",
@@ -43,7 +44,7 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 	    workgroup != nullptr && program.wave_size == 64u && workgroup->host_subgroup_size == 32u
 	        ? 2u
 	        : 1u;
-	DefineModule(state, push_data_ceiling);
+	DefineModule(state);
 	EmitProgram(state);
 	state.builder.AddEntryPoint(ExecutionModelForStage(state.program.stage), state.main_func,
 	                            "main", state.interface_variables);

@@ -541,15 +541,26 @@ struct RenderExecutorTestAccess {
     if (pixel_active) {
       executor.PrepareBindings(pixel, result.pixel);
     }
+    DrawTargets targets{};
     executor.PrepareGraphicsBindings(
-        std::span{stages.data(), pixel_active ? 2u : 1u}, {});
+        std::span{stages.data(), pixel_active ? 2u : 1u}, targets);
     return result;
   }
 
   static void PrepareGraphicsBindings(RenderExecutor &executor,
                                       std::span<PreparedBindings *const> stages,
+                                      DrawTargets &targets) {
+    executor.PrepareGraphicsBindings(stages, targets);
+  }
+
+  static void PrepareGraphicsBindings(RenderExecutor &executor,
+                                      std::span<PreparedBindings *const> stages,
                                       std::span<RenderColorInfo> colors) {
-    executor.PrepareGraphicsBindings(stages, colors);
+    DrawTargets targets{};
+    std::ranges::copy(colors, targets.colors);
+    targets.color_count = static_cast<uint32_t>(colors.size());
+    executor.PrepareGraphicsBindings(stages, targets);
+    std::ranges::copy(std::span{targets.colors, colors.size()}, colors.begin());
   }
 
   static PipelineCache::Pipeline
@@ -721,10 +732,11 @@ struct PipelineCacheTestAccess {
 
   static auto Compiled(const PipelineCache &cache) { return cache.m_compiled; }
 
+  template <typename InputInfo>
   static const ShaderModule *GetProgram(PipelineCache &cache, const ShaderParams &params,
-                                        ShaderVertexInputInfo &input) {
-    uint32_t push_data_cursor = 0;
-    return cache.GetProgram(params, input, push_data_cursor);
+                                        InputInfo &input,
+                                        ShaderRecompiler::IR::PushData::Window push_data = {}) {
+    return cache.GetProgram(params, input, push_data);
   }
 
   static void StoreLayout(PipelineCache &cache, uint64_t key,
@@ -1964,7 +1976,7 @@ CompiledShader CompileCase(const TestCase &test, u32 host_subgroup_size = 64) {
     result.program.shader_info_complete = false;
     ShaderRecompiler::IR::CollectShaderInfo(result.program, options.input_info);
     result.spirv = ShaderRecompiler::Spirv::EmitProgram(
-        result.program, options.input_info, 0u, *options.profile, true);
+        result.program, options.input_info, {}, *options.profile, true);
     const auto shader_data = result.program.bindings.descriptor_counts[
         static_cast<size_t>(ShaderRecompiler::IR::DescriptorBindingKind::ShaderData)];
     Require(test.name, "binding layout",
@@ -2122,7 +2134,7 @@ CompiledShader CompileFragmentCase(const GraphicsCase &test) {
           "translated resources could not be materialized");
   auto result = ShaderRecompiler::CompileProgram(
       std::move(translated), options, specialization,
-      static_cast<u32>(pixel_info.object_primitive_id));
+      {.begin = static_cast<u32>(pixel_info.object_primitive_id)});
   Require(test.name, "SPIR-V emit", !result.spirv.empty(),
           "recompiler returned empty SPIR-V");
   ValidateSpirv(test.name, result.spirv);
@@ -3895,7 +3907,7 @@ public:
         wait_for_interrupt(interrupt_event, interrupt_count);
     const bool compute_interrupt_matches =
         compute_interrupt_wait == 0 && interrupt_count == 1 &&
-        interrupt_event.ident == 0x20 && interrupt_event.data == 0x456u &&
+        interrupt_event.ident == 0x20 && interrupt_event.data == (0x456 << 16 | 0x20) &&
         interrupt_event.udata == &compute_interrupt_udata &&
         compute_interrupt_label == 0x55667788u;
 
@@ -3911,7 +3923,7 @@ public:
         wait_for_interrupt(interrupt_event, interrupt_count);
     const bool compute_clock_matches =
         compute_clock_wait == 0 && interrupt_count == 1 &&
-        interrupt_event.ident == 0x20 && interrupt_event.data == 0x567u &&
+        interrupt_event.ident == 0x20 && interrupt_event.data == (0x567 << 16 | 0x20) &&
         interrupt_event.udata == &compute_interrupt_udata &&
         compute_clock_label != 0;
 
@@ -3929,12 +3941,12 @@ public:
         wait_for_interrupt(interrupt_event, interrupt_count);
     Require("GpuCommandLane", "CS_DONE write-confirm interrupt",
             compute_done_wait == 0 && interrupt_count == 1 &&
-                interrupt_event.ident == 0x20 && interrupt_event.data == 0x678u &&
+                interrupt_event.ident == 0x20 && interrupt_event.data == (0x678 << 16 | 0x20) &&
                 interrupt_event.udata == &compute_interrupt_udata &&
                 compute_done_label == compute_done_value,
             "CS_DONE lost its full 64-bit label write or write-confirm interrupt");
 
-    auto send_context_commands = make_interrupt_packet(0, 4, nullptr, 0, 0x789u);
+    auto send_context_commands = make_interrupt_packet(0, 4, nullptr, 0, 0x7654789u);
     gpu.SubmitCompute(0x20, send_context_commands);
     gpu.WaitForIdle();
     finish_gpu();
@@ -3944,7 +3956,7 @@ public:
         wait_for_interrupt(interrupt_event, interrupt_count);
     Require("GpuCommandLane", "kSendIntCtx interrupt",
             send_context_wait == 0 && interrupt_count == 1 &&
-                interrupt_event.ident == 0x20 && interrupt_event.data == 0x789u,
+                interrupt_event.ident == 0x20 && interrupt_event.data == (0x7654789ll << 16 | 0x20),
             "kSendIntCtx lost its interrupt or context id");
 
     // A GDS release interrupt follows the interrupts queued before it, so
@@ -3975,8 +3987,8 @@ public:
     const auto second_wait = wait_for_interrupt(second_event, second_count);
     Require("GpuCommandLane", "GDS interrupt order",
             parked_wait == LibKernel::KERNEL_ERROR_ETIMEDOUT && first_wait == 0 &&
-                interrupt_count == 1 && interrupt_event.data == 0xa1u &&
-                second_wait == 0 && second_count == 1 && second_event.data == 0xa2u,
+                interrupt_count == 1 && interrupt_event.data == (0xa1 << 16 | 0x20) &&
+                second_wait == 0 && second_count == 1 && second_event.data == (0xa2 << 16 | 0x20),
             "a GDS release interrupt overtook an earlier interrupt");
 
     // Repeats of the newest undelivered data count in its event instead of queuing.
@@ -3985,8 +3997,8 @@ public:
     }
     const bool coalesced =
         wait_for_interrupt(interrupt_event, interrupt_count) == 0 && interrupt_event.fflags == 2 &&
-        wait_for_interrupt(interrupt_event, interrupt_count) == 0 && interrupt_event.data == 2 &&
-        wait_for_interrupt(interrupt_event, interrupt_count) == 0 && interrupt_event.data == 3;
+        wait_for_interrupt(interrupt_event, interrupt_count) == 0 && interrupt_event.data == 2 << 16 &&
+        wait_for_interrupt(interrupt_event, interrupt_count) == 0 && interrupt_event.data == 3 << 16;
     Require("GpuCommandLane", "interrupt coalescing", coalesced,
             "undelivered interrupts with the same data were not counted in one event");
 
@@ -7530,6 +7542,35 @@ public:
               "an exact backing with insufficient resources was expanded "
               "instead of being discarded and recreated");
 
+      // A view keeps its mip once later candidates resolve against its container.
+      const auto make_linear = [&](uint64_t offset, vk::Format format,
+                                   Prospero::BufferFormat guest, uint32_t bytes,
+                                   uint32_t extent, uint32_t levels) {
+        auto desc = MakeLinearDesc(base + offset, 0, format, guest,
+                                   Prospero::ImageType::kColor2D, {extent, extent, 1}, 1,
+                                   bytes, 1);
+        desc.info.resources.levels = levels;
+        desc.info.pitch = 0;
+        desc.info.UpdateSize();
+        desc.view_info.level_count = levels;
+        return desc;
+      };
+      constexpr uint64_t view_chain_offset = 0x780000;
+      auto view_chain = make_linear(view_chain_offset, vk::Format::eR8Unorm,
+                                    Prospero::BufferFormat::k8UNorm, 1, 64, 3);
+      const auto view_chain_id = texture_cache.FindImage(view_chain);
+      auto view_neighbor = make_linear(view_chain_offset + 0x2000, vk::Format::eR32Sfloat,
+                                       Prospero::BufferFormat::k32Float, 4, 8, 1);
+      const auto view_neighbor_id = texture_cache.FindImage(view_neighbor);
+      auto mip_view = make_linear(view_chain_offset + view_chain.info.mip_layout[1].offset,
+                                  vk::Format::eR8Unorm, Prospero::BufferFormat::k8UNorm, 1,
+                                  32, 1);
+      Require(name, "view mip after a later candidate",
+              view_neighbor_id != view_chain_id &&
+                  texture_cache.FindImage(mip_view) == view_chain_id &&
+                  mip_view.view_info.base_level == 1,
+              "a later overlapping candidate reset a view to its container's base level");
+
       ImageInfo chain = sampled.info;
       chain.data = {0x2394c1000, 0x384000};
       chain.extent = {64, 64, 1};
@@ -7546,9 +7587,8 @@ public:
       subresource.resources = {1, 1};
       subresource.mip_layout = {};
       subresource.mip_layout[0] = {0, 0x4000, 64, 64};
-      const auto mip = subresource.MipOf(chain);
       Require(name, "overlap resolution",
-              mip == 0 && subresource.SliceOf(chain, mip) == 0 &&
+              subresource.SubresourceOf(chain) == ImageSubresource{0, 0} &&
                   ImageRangeOverlaps(chain.data, subresource.data),
               "captured PS5 atlas mip/slice overlap did not resolve");
 
@@ -8354,6 +8394,69 @@ public:
           "the partial depth view lost a layer or failed to restore raw UINT "
           "sampling");
       DestroyBuffer(&layered_raw_d16_readback);
+
+      // PPSA18026: an image heap samples a four-layer shadow array as R16 while a draw renders
+      // slice 1 of its two-layer D16 HTile depth target.
+      constexpr uint64_t grow_depth_offset = layered_raw_d16_offset + 0x1000;
+      constexpr uint64_t grow_htile_address = base + grow_depth_offset + 0x800;
+      constexpr std::array<uint16_t, 8> grow_depth_values{
+          0x1111u, 0x1112u, 0x2221u, 0x2222u, 0x3331u, 0x3332u, 0x4441u, 0x4442u};
+      std::memcpy(memory + grow_depth_offset, grow_depth_values.data(),
+                  sizeof(grow_depth_values));
+      DrawTargets grow_targets{};
+      auto &grow_depth = grow_targets.depth;
+      grow_depth.desc = MakeLinearDesc(
+          base + grow_depth_offset, sizeof(grow_depth_values) / 2, vk::Format::eD16Unorm,
+          Prospero::BufferFormat::k16UNorm, Prospero::ImageType::kColor2D, {2, 1, 1}, 2,
+          sizeof(uint16_t), 1);
+      grow_depth.desc.type = BindingType::DepthTarget;
+      grow_depth.desc.info.metadata.kind = ImageMetadataKind::Htile;
+      grow_depth.desc.info.metadata.range = {grow_htile_address, 0x200};
+      grow_depth.desc.info.htile_initial_clear = true;
+      grow_depth.desc.view_info.type = vk::ImageViewType::e2D;
+      grow_depth.desc.view_info.aspect = vk::ImageAspectFlagBits::eDepth;
+      grow_depth.desc.view_info.base_layer = 1;
+      grow_depth.desc.view_info.layer_count = 1;
+      grow_depth.desc.view_info.usage = vk::ImageUsageFlagBits::eDepthStencilAttachment;
+      grow_depth.image_id = texture_cache.FindImage(grow_depth.desc);
+      (void)texture_cache.FindDepthTarget(grow_depth.image_id, grow_depth.desc);
+      RenderExecutorTestAccess::BindRenderTarget(context.GetRenderExecutor(),
+                                                 grow_depth.image_id);
+      const auto two_layer_depth = grow_depth.image_id;
+      vk::ClearValue grow_clear{};
+      grow_clear.depthStencil.depth = 1.0f;
+      TextureCacheTestAccess::ClearImage(texture_cache, scheduler.Current(), two_layer_depth,
+                                         {vk::ImageAspectFlagBits::eDepth, 0, 1, 1, 1},
+                                         grow_clear);
+      texture_cache.MarkGpuWritten(two_layer_depth);
+      auto grow_sampled = MakeLinearDesc(
+          base + grow_depth_offset, sizeof(grow_depth_values), vk::Format::eR16Unorm,
+          Prospero::BufferFormat::k16UNorm, Prospero::ImageType::kColor2D, {2, 1, 1}, 4,
+          sizeof(uint16_t), 1);
+      const auto grown = texture_cache.FindImage(grow_sampled);
+      Require(name, "sampled depth array grows as depth",
+              grown != two_layer_depth &&
+                  !TextureCacheTestAccess::Contains(texture_cache, two_layer_depth) &&
+                  texture_cache.GetImage(grown).backing.format == vk::Format::eD16Unorm &&
+                  texture_cache.GetImage(grown).info.resources.layers == 4 &&
+                  texture_cache.IsMetaCleared(grow_htile_address, 3) &&
+                  texture_cache.FindTexture(grown, grow_sampled) != nullptr,
+              "a sampled view of more layers moved the depth target to a color copy");
+      RenderExecutorTestAccess::PrepareGraphicsBindings(
+          context.GetRenderExecutor(), std::span<PreparedBindings *const>{}, grow_targets);
+      const auto grow_rendering = RenderExecutorTestAccess::AcquireRenderTargets(
+          context.GetRenderExecutor(), scheduler.Current(), grow_targets.colors, 0, grow_depth);
+      Require(name, "grown depth target rediscovery",
+              grow_depth.image_id == grown &&
+                  grow_rendering.depth_stencil_attachment.image_view != nullptr,
+              "the draw did not find its depth target in the grown image");
+      RenderExecutorTestAccess::ResetBindings(context.GetRenderExecutor());
+      Require(name, "grown depth layers",
+              ReadCachedTexel(name, context, grown, {}, {2, 1, 1}, 1) ==
+                      std::vector<u32>{0xffffffffu} &&
+                  ReadCachedTexel(name, context, grown, {}, {2, 1, 1}, 3) ==
+                      std::vector<u32>{0x44424441u},
+              "the grown depth image lost a GPU-written layer or skipped guest memory");
 
       // RE2 converts a prefix of a 32-layer HTile depth array to R32F storage.
       constexpr uint32_t htile_layers = 32;
@@ -16724,6 +16827,58 @@ public:
       }
 
       {
+        // A GiB-sized pool descriptor whose window is mapped in pieces around a free hole.
+        constexpr uint64_t page = 0x10000;
+        constexpr uint64_t address = base + allocation_size - page;
+        constexpr uint64_t piece = base + allocation_size + page;
+        constexpr u32 resident_value = 0x2468ace1u;
+        int64_t piece_offset = -1;
+        void *piece_mapping = reinterpret_cast<void *>(piece);
+        Require(name, "pool piece mapping",
+                LibKernel::Memory::KernelAllocateDirectMemory(
+                    0, LibKernel::Memory::KernelGetDirectMemorySize(), page, page, 0,
+                    &piece_offset) == 0 &&
+                    LibKernel::Memory::KernelMapDirectMemory(&piece_mapping, page, 0x3, 0x10,
+                                                             piece_offset, page) == 0,
+                "pool piece fixed mapping failed");
+        resources.MapMemory(piece, page);
+        LibKernel::Memory::WriteBacking(piece, &resident_value, sizeof(resident_value));
+        const auto program = make_buffer_program(ShaderType::Compute, {.read = true});
+        ShaderRecompiler::IR::ResourceSnapshot snapshot;
+        auto &value = snapshot.buffers.emplace_back();
+        value.dword_count = 4;
+        value.dwords = {static_cast<u32>(address), static_cast<u32>(address >> 32), 0x40000000u};
+        ShaderStageRuntime runtime{&program, &snapshot};
+        PreparedBindings bindings;
+        executor.PrepareBindings(runtime, bindings);
+        std::array<PreparedBindings *, 1> stages{&bindings};
+        executor.FindBuffers(stages);
+        executor.RebindBuffers(bindings);
+        const auto &source = bindings.buffer_sources[0];
+        const auto &owner = resources.GetBufferCache().GetBuffer(source.id);
+        Require(name, "oversized descriptor across a free hole",
+                source.address == address && source.size == 3u * page &&
+                    bindings.buffers[0].range == 3u * page,
+                "oversized descriptor stopped at its first unmapped hole");
+        auto output = CreateHostBuffer(name, 2u * sizeof(u32), vk::BufferUsageFlagBits::eTransferDst, {});
+        const std::array<vk::BufferCopy, 2> copies{{
+            {owner.Offset(base + allocation_size), 0, sizeof(u32)},
+            {owner.Offset(piece), sizeof(u32), sizeof(u32)}}};
+        scheduler.Current().Handle().copyBuffer(owner.Handle(), output.buffer, copies.size(), copies.data());
+        scheduler.Finish();
+        Require(name, "oversized descriptor upload across a free hole",
+                ReadBuffer(name, output, 2) == std::vector<u32>{0u, resident_value},
+                "pool upload lost its zero-filled hole or the piece past it");
+        DestroyBuffer(&output);
+        // The buffer also watches the hole, which the section's own unmap does not cover.
+        resources.UnmapMemory(base + allocation_size, 2u * page);
+        Require(name, "pool piece release",
+                LibKernel::Memory::KernelMunmap(piece, page) == 0 &&
+                    LibKernel::Memory::KernelReleaseDirectMemory(piece_offset, page) == 0,
+                "pool piece release failed");
+      }
+
+      {
         const auto buffer_program = make_buffer_program(ShaderType::Compute, {.read = true, .written = true});
         constexpr uint64_t buffer_address = base + 0xe0002;
         ShaderBufferResource descriptor{};
@@ -20745,9 +20900,6 @@ public:
     vertex_shader.info.stage = ShaderType::Vertex;
     vertex_shader.info.info.vertex_fetch_components[0] = 2;
     vertex_shader.info.info.vertex_fetch_components[1] = packed_vertex_color ? 3 : 4;
-    // No narrower host format covers the components the stage reads from either attribute.
-    vertex_shader.vertex_formats = {VulkanFormat(Prospero::BufferFormat::k32_32Float),
-                                    VulkanFormat(color_format)};
     ShaderModule pixel_shader{.id = 2, .module = CreateShaderModule(name, fragment.spirv)};
     pixel_shader.info.stage = ShaderType::Pixel;
     pixel_shader.info.info = fragment.program.info;
@@ -37084,7 +37236,7 @@ TestCase BufferLoadGpuSelectedDescriptors(u32 wave, ShaderOpcode load) {
     std::copy(row.begin(), row.end(), test.initial.begin() + descriptor_base / 4u + i * 8);
     if (!input.zero_payload)
       std::copy(payload.begin(), payload.end(), test.initial.begin() + data_offset / 4);
-    // Read the selection on the GPU, as a captured descriptor waterfall does.
+    // Read the selection on the GPU, as a descriptor waterfall does.
     test.initial[selection_base / 4u + i] = std::size(cases) - 1 - i;
     test.expected.push_back(cases[std::size(cases) - 1 - i].expected);
   }
@@ -45090,9 +45242,10 @@ void CheckIndirectBufferStore(VulkanHarness &vulkan) {
     }
     program.shader_info_complete = false;
     CollectShaderInfo(program, {.compute = &compute});
-    const auto push_start = layout == Layout::ShiftedPushData ? 3u :
-                            layout == Layout::StorageData ? PushData::NoStart : 0u;
-    compiled.spirv = ShaderRecompiler::Spirv::EmitProgram(program, {.compute = &compute}, push_start);
+    PushData::Window push_data;
+    if (layout == Layout::ShiftedPushData) push_data.begin = 3u;
+    if (layout == Layout::StorageData) push_data.begin = PushData::DwordCount;
+    compiled.spirv = ShaderRecompiler::Spirv::EmitProgram(program, {.compute = &compute}, push_data);
     Require(test.name, "candidate bindings",
             program.bindings.descriptor_counts[0] == (single ? 1u : 2u) &&
                 program.info.buffers[0].descriptor_index == 0u &&
@@ -50223,6 +50376,117 @@ void CheckStableProgramIds(VulkanHarness &vulkan) {
   std::printf("[gpu]     %-32s ok\n", name);
 }
 
+// A lookup finds the same pixel module whatever the draw data's size, and the same vertex
+// module whatever the pixel shader data's size.
+void CheckGraphicsPushDataModules(VulkanHarness &vulkan) {
+  using ShaderRecompiler::IR::PushData;
+  constexpr const char *name = "GraphicsPushDataModules";
+  // v_mov_b32 v0..v3, s0..s3; exp mrt0 v0..v3
+  const std::vector<u32> pixel{EncodeVop1(0x01, 0, 0), EncodeVop1(0x01, 1, 1),
+                               EncodeVop1(0x01, 2, 2), EncodeVop1(0x01, 3, 3),
+                               EncodeExp0(0x00, 0xf), EncodeExp1(0, 1, 2, 3), EncodeSopp(0x01)};
+  // v_mov_b32 v0, s8; exp pos0 v0, v0, v0, v0
+  const std::vector<u32> vertex{EncodeVop1(0x01, 0, 8), EncodeExp0(0x0c, 0xf),
+                                EncodeExp1(0, 0, 0, 0), EncodeSopp(0x01)};
+  const ShaderParams pixel_params{.code = pixel, .user_data_count = 4, .hash = 1};
+  const ShaderParams vertex_params{.code = vertex, .user_data_count = 1, .hash = 2};
+  PipelineCache cache(vulkan.RuntimeContext(), nullptr);
+  const auto lookup = [&](const ShaderParams &params, auto input, PushData::Window push_data) {
+    return PipelineCacheTestAccess::GetProgram(cache, params, input, push_data);
+  };
+  const auto *pixel_module = lookup(pixel_params, ShaderPixelInputInfo{}, {});
+  Require(name, "pixel module",
+          pixel_module->info.bindings.push_data_start_dword == PushData::DwordCount - 4 &&
+              lookup(pixel_params, ShaderPixelInputInfo{}, {.begin = 1}) == pixel_module,
+          "a pixel program's push data moved with the draw's");
+  const auto *vertex_module = lookup(vertex_params, ShaderVertexInputInfo{}, {.end = 28});
+  Require(name, "vertex module",
+          vertex_module->info.bindings.push_data_start_dword == 0 &&
+              lookup(vertex_params, ShaderVertexInputInfo{}, {}) == vertex_module,
+          "a vertex program's push data moved with the pixel program's");
+  std::printf("[gpu]     %-32s ok\n", name);
+}
+
+// Vertex formats with the same channel count and type class (Uint, Sint, or any other as
+// Float) share a vertex module; each draw's pipeline holds its own format.
+void CheckVertexFormatModules(VulkanHarness &vulkan) {
+  using F = Prospero::BufferFormat;
+  constexpr const char *name = "VertexFormatModules";
+  // s_mov_b32 s0, 0; s_load_dwordx4 s[20:23], s[8:9]; v_cndmask_b32 v0, v8, v5;
+  // buffer_load_format_xyzw v[9:12], v0, s[20:23] idxen; exp pos0 v9..v12
+  const std::vector<u32> code{EncodeSMovB32(0, InlineU32(0)), EncodeSmem0(0x02u, 20, 4),
+                              EncodeSmem1(0), EncodeVop2(0x01u, 0, Vgpr(8), 5),
+                              EncodeMubuf0(0x03u, 0, true), EncodeMubuf1(9, 5, 0),
+                              EncodeExp0(0x0c, 0xf), EncodeExp1(9, 10, 11, 12), EncodeSopp(0x01)};
+  const ShaderParams params{.code = code, .user_data_count = 2, .hash = 3};
+  RenderContext context(vulkan.RuntimeContext());
+  HW::Context registers{};
+  HW::UserConfig user_config{};
+  HW::Shader shaders{};
+  auto &scheduler = context.GetCommandScheduler();
+  scheduler.Begin(registers, user_config, shaders);
+  auto &cache = context.GetPipelineCache();
+  // The vertex module and pipeline of a draw fetching attribute 0 in `format`.
+  const auto draw = [&](F format) {
+    DrawRenderState state{.topology = vk::PrimitiveTopology::eTriangleList};
+    auto &input = state.vertex_info[0];
+    input.has_dynamic_vertex_fetch = true;
+    input.resources_num = input.buffers_num = 1;
+    input.buffers[0].stride = 16;
+    input.resources[0].fields[3] = DstSel(4, 5, 6, 7) | BufferFormat(format) << 12u;
+    input.resources_dst[0] = {.registers_num = 4, .attr_id = 0};
+    const auto *module = PipelineCacheTestAccess::GetProgram(cache, params, input);
+    return std::pair{module, cache.GetGraphicsPipeline(scheduler.Current(), state, {}).pipeline};
+  };
+  const auto uint8 = draw(F::k8_8_8_8UInt);
+  const auto uint16 = draw(F::k16_16_16_16UInt);
+  const auto unorm8 = draw(F::k8_8_8_8UNorm);
+  const auto float32 = draw(F::k32_32_32_32Float);
+  Require(name, "shared module",
+          uint16.first == uint8.first && float32.first == unorm8.first &&
+              uint16.second != uint8.second,
+          "formats differing only in channel widths compiled separate vertex modules or shared "
+          "a pipeline");
+  Require(name, "distinct modules",
+          unorm8.first != uint8.first && draw(F::k8_8_8_8SInt).first != uint8.first &&
+              draw(F::k8_8UInt).first != uint8.first,
+          "a vertex module was shared across integer signedness or channel counts");
+  scheduler.Finish();
+  std::printf("[gpu]     %-32s ok\n", name);
+}
+
+// Graphics and async dispatches share a compute module; an async dispatch of one that reads HW_ID2 exits.
+void CheckComputeQueueModules(VulkanHarness &vulkan) {
+  constexpr const char *name = "ComputeQueueModules";
+  const std::vector<u32> plain{EncodeSopp(0x01)};
+  const std::vector<u32> queue_read{0xb96a1818u, EncodeSopp(0x01)}; // s_getreg_b32 vcc_lo, HW_ID2
+  for (const auto *code : {&plain, &queue_read})
+    ShaderMapUserData(reinterpret_cast<uint64_t>(code->data()),
+        {.type = Prospero::ShaderBinaryType::kCs,
+         .code_size_bytes = static_cast<u32>(code->size() * sizeof(u32))});
+  PipelineCache cache(vulkan.RuntimeContext(), nullptr);
+  const auto compile = [&](const std::vector<u32> &code, bool async) {
+    HW::ComputeShaderInfo regs{};
+    regs.cs_regs.data_addr = reinterpret_cast<uint64_t>(code.data());
+    regs.cs_regs.num_thread_x = 1;
+    regs.cs_regs.num_thread_y = 1;
+    regs.cs_regs.num_thread_z = 1;
+    regs.cs_regs.wave_size = 32;
+    ShaderComputeInputInfo input{};
+    input.async_compute = async;
+    return cache.GetComputeProgram(regs, input);
+  };
+  const auto *graphics = compile(plain, false);
+  Require(name, "shared module", compile(plain, true) == graphics,
+          "async compute recompiled a shader that does not read its queue");
+  Require(name, "queue read", compile(queue_read, false)->info.info.reads_queue_id,
+          "the graphics module did not record its HW_ID2 queue read");
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+  ExpectFatal(name, [&] { (void)compile(queue_read, true); });
+#endif
+  std::printf("[gpu]     %-32s ok\n", name);
+}
+
 // With a shader store a restart compiles nothing and creates every pipeline before the first
 // lookup. A damaged record and everything after it are dropped; a stale store starts over.
 void CheckShaderStore(VulkanHarness &vulkan) {
@@ -50539,8 +50803,7 @@ void CheckPs5GameExampleImageClearRuntimeShape() {
                                     packed_clear, size),
           "partial buffer coverage was classified as a complete clear");
 
-  // Same descriptor/dispatch as the captured clear, with the stored value encoded in the
-  // shader.
+  // A clear whose stored value is encoded in the shader.
   user_data = {0x00200000u, 4u << 16u, 64u, 0x14204u};
   compute.workgroup_register = 4;
   compute.dispatch_thread_dimensions = false;
@@ -50557,7 +50820,7 @@ void CheckPs5GameExampleImageClearRuntimeShape() {
                                    packed_clear, size) &&
               descriptor.Base48() == 0x200000u && size == 256u &&
               packed_clear == 0u,
-          "The captured scalar store was not recognized from IR");
+          "the inline scalar store was not recognized from IR");
   Require("Ps5GameExampleImageClear", "excess dispatch",
           !ResolveComputeBufferFill(compute, 2, 1, 1, 0x41u, descriptor,
                                     packed_clear, size),
@@ -50636,7 +50899,7 @@ void CheckPs5GameExampleImageClearRuntimeShape() {
           ResolveComputeBufferFill(compute, 1, 1, 1, 0x41u, descriptor,
                                    packed_clear, size) &&
               packed_clear == scalar_clear && descriptor.Base48() == 0x200000u,
-          "The captured scalar input was confused with its destination");
+          "the scalar input was confused with its destination");
   std::printf("[host]    %-32s ok\n", "Ps5GameExampleImageClear");
 }
 
@@ -50674,6 +50937,15 @@ TessellationStage CompileTessellationStage(const char *name, const std::vector<u
   Require(name, "disassembly", tools.Disassemble(compiled.spirv, &result.assembly),
           "failed to disassemble tessellation shader");
   return result;
+}
+
+std::vector<u32> TessellationStageKey(ShaderType stage, const ShaderTessellationInputInfo &tess) {
+  ShaderVertexInputInfo vertex;
+  vertex.logical_stage = stage;
+  vertex.tess = tess;
+  std::vector<u32> key;
+  BuildStageStaticKey(vertex, key);
+  return key;
 }
 
 // Whether a Patch uvec4[vectors] variable of a storage class sits at a Location.
@@ -50860,6 +51132,43 @@ void CheckTessellationProgram(const char *name, u32 ls_stride, u32 hs_stride, u3
               ds.assembly.find(output_topology == 2 ? "VertexOrderCcw" : "VertexOrderCw") ==
                   std::string::npos,
           "TES must preserve guest domain, partitioning, and winding");
+
+  // Each stage keys exactly the layout fields its module depends on; the rest leave it unchanged.
+  using Layout = ShaderTessellationInputInfo;
+  struct Field {
+    u32 Layout::*member;
+    u32 value;
+    const char *stages; // The stages depending on the field: L(S), H(S), T(ES).
+  };
+  const Field fields[] = {
+      {&Layout::input_control_points, tess.input_control_points + 1, "H"},
+      {&Layout::output_control_points, tess.output_control_points + 1, "HT"},
+      {&Layout::ls_stride, tess.ls_stride + 16, "LH"},
+      {&Layout::hs_stride, tess.hs_stride + 16, "HT"},
+      {&Layout::patch_base, tess.patch_base + 16, "HT"},
+      {&Layout::patch_size, tess.patch_size + 16, "HT"},
+      {&Layout::domain, 3 - domain, "HT"},
+      {&Layout::partitioning, 5 - partitioning, "T"},
+      {&Layout::output_topology, 5 - output_topology, "T"},
+  };
+  const auto check_layout = [&](const char *what, char stage_letter, ShaderType stage,
+                                const std::vector<u32> &code, const std::string &assembly) {
+    const auto key = TessellationStageKey(stage, tess);
+    for (const auto &field : fields) {
+      auto layout = tess;
+      layout.*field.member = field.value;
+      const bool depends = std::strchr(field.stages, stage_letter) != nullptr;
+      Require(name, what,
+              (TessellationStageKey(stage, layout) != key) == depends &&
+                  (depends ||
+                   CompileTessellationStage(name, code, stage, layout).assembly == assembly),
+              "a tessellation stage key must hold exactly the layout fields its module depends on");
+    }
+  };
+  check_layout("LS layout key", 'L', ShaderType::Local, local, ls.assembly);
+  check_layout("HS layout key", 'H', ShaderType::TessellationControl, control, hs.assembly);
+  check_layout("TES layout key", 'T', ShaderType::TessellationEvaluation, evaluation,
+               ds.assembly);
   std::printf("[host]    %-32s ok\n", name);
 }
 
@@ -55157,6 +55466,43 @@ void CheckPm4ResetQueue(RenderContext &renderer) {
           ctx.GetPrimitiveResetIndex() == 0xffffffffu &&
               processor.GetDispatchIndirectArgsBaseAddress() == 0,
           "the reset did not clear the context and the indirect bases");
+
+  // A compute queue resets Sh state only, and only when the op names it.
+  CommandProcessor compute(renderer, 0x20);
+  const auto reset_async = [&](uint32_t op, uint32_t gcr) {
+    std::array<uint32_t, 11> packet{};
+    CommandBufferLayout acb{packet.data(), packet.data() + packet.size(),
+                            packet.data(), packet.data() + packet.size(),
+                            nullptr, nullptr, 0};
+    Gen5::AgcAcbResetQueue(reinterpret_cast<Gen5::CommandBuffer *>(&acb), op);
+    const std::array<uint32_t, 11> expected{
+        0xc0017900u, 0x342u, 0xce000000u | op, gcr == 0 ? 0u : 0xc0065800u,
+        0,           0,      0,                0,
+        0,           0,      gcr};
+    Pm4Execution execution;
+    Require(name, "async packet",
+            packet == expected &&
+                compute.Process(execution, {packet.data(), acb.cursor_up}) ==
+                    Pm4ProcessResult::Complete,
+            "the async reset packets are not the native ones or did not complete");
+  };
+  compute.GetCtx().SetPrimitiveResetIndex(7);
+  compute.GetShCtx().SetCsUserSgpr(0, 7);
+  compute.GetUcfg().SetPrimitiveResetControl(7);
+  compute.SetDispatchIndirectArgsBaseAddress(0x1000);
+  const auto kept = [&](uint32_t sgpr) {
+    return compute.GetShCtx().GetCs().cs_user_sgpr.value[0] == sgpr &&
+           compute.GetCtx().GetPrimitiveResetIndex() == 7 &&
+           compute.GetUcfg().GetPrimitiveResetControl() == 7 &&
+           compute.GetDispatchIndirectArgsBaseAddress() == 0x1000;
+  };
+  reset_async(0x40u, 0xc1u);
+  reset_async(0x1c0u, 0xc3a1u);
+  Require(name, "async keeps state", kept(7),
+          "an async reset without Sh state reset the queue");
+  reset_async(Op::ShState, 0);
+  Require(name, "async Sh", kept(0),
+          "an async Sh reset did not reset only Sh state");
   std::printf("[host]    %-32s ok\n", name);
 }
 
@@ -55393,8 +55739,8 @@ void CheckPm4DrawIndirectMultiPacket(RenderContext &renderer) {
           emitted = indexed ? Gen5::AgcDcbDrawIndexIndirect(buffer, data_offset, draw_modifier)
                             : Gen5::AgcDcbDrawIndirect(buffer, data_offset, draw_modifier);
         }
-        const uint32_t begin = multi && !indexed ? 3 : 0;
-        const uint32_t words = multi ? (indexed ? 10 : 16) : 5;
+        const uint32_t begin = multi ? 3 : 0;
+        const uint32_t words = multi ? 16 : 5;
         const uint32_t opcode = multi ? (indexed ? 0xc0083800u : 0xc0082c00u)
                                       : (indexed ? 0xc0032500u : 0xc0032400u);
         const uint32_t initiator = (indexed ? 0 : 2) |
@@ -55981,6 +56327,17 @@ void CheckPm4IndirectControlFlow(RenderContext &renderer) {
           processor.Process(execution, caller) == Pm4ProcessResult::Complete &&
               selected == 11 && returned == 22,
           "long chain did not complete and return to the original caller");
+
+  // A jump fetches from its target with bits 1:0 of the low DWORD cleared.
+  auto jump = indirect(then_commands, false);
+  jump[1] |= 3u;
+  std::copy(jump.begin(), jump.end(), caller.begin());
+  selected = returned = 0;
+  Pm4Execution jump_execution;
+  Require(name, "jump low bits",
+          processor.Process(jump_execution, caller) == Pm4ProcessResult::Complete &&
+              selected == 11 && returned == 22,
+          "a jump fetched its target with the low bits as address bits");
   std::printf("[host]    %-32s ok\n", name);
 }
 
@@ -56785,9 +57142,9 @@ void CheckPm4MemSemaphore(RenderContext &renderer) {
 
   Require(name, "wait stream",
           emit(0, 7) &&
-              packet == decltype(packet){0xc0027904u, 0x342u, 0xc9020000u | (high & 0xffffu), low,
+              packet == decltype(packet){0xc0027900u, 0x342u, 0xc9020000u | (high & 0xffffu), low,
                                          0xc0023900u, low & ~0x7u, high, 0xe0010000u,
-                                         0xc0017904u, 0x342u, 0xc9000000u} &&
+                                         0xc0017900u, 0x342u, 0xc9000000u} &&
               Gen5::AgcIsInternalDataPacket(packet[0], packet.data() + 1) &&
               Gen5::AgcIsInternalDataPacket(packet[8], packet.data() + 9),
           "semaphore wait differs from the native stream");
@@ -56801,7 +57158,7 @@ void CheckPm4MemSemaphore(RenderContext &renderer) {
 
   Require(name, "increment stream",
           emit(0, 6) &&
-              packet == decltype(packet){0xc0027904u, 0x342u, 0xc9010000u | (high & 0xffffu), low,
+              packet == decltype(packet){0xc0027900u, 0x342u, 0xc9010000u | (high & 0xffffu), low,
                                          0xc0011000u, poison, poison,
                                          0xc0023900u, low & ~0x7u, high, 0xc0010000u} &&
               Gen5::AgcIsInternalDataPacket(packet[0], packet.data() + 1) &&
@@ -56815,6 +57172,68 @@ void CheckPm4MemSemaphore(RenderContext &renderer) {
   Require(name, "write",
           emit(1, 6) && packet[10] == 0xc0110000u && execute(packet) && counter == 1,
           "semaphore write signal did not set the counter to one");
+  std::printf("[host]    %-32s ok\n", name);
+}
+
+void CheckPm4WriteDataGds(VulkanHarness &vulkan) {
+  constexpr const char *name = "Pm4WriteDataGds";
+  RenderContext context(vulkan.RuntimeContext());
+  HW::Context registers{};
+  HW::UserConfig user_config{};
+  HW::Shader shaders{};
+  auto &scheduler = context.GetCommandScheduler();
+  scheduler.Begin(registers, user_config, shaders);
+  CommandProcessor processor(context, 0x20);
+  // Increment 0 writes consecutive DWORDs, 1 writes one address.
+  const auto write = [&](uint64_t offset, uint8_t increment) {
+    constexpr std::array<uint32_t, 3> data{0x11u, 0x22u, 0x33u};
+    std::array<uint32_t, 7> packet{};
+    CommandBufferLayout acb{packet.data(), packet.data() + packet.size(),
+                            packet.data(), packet.data() + packet.size(),
+                            nullptr, nullptr, 0};
+    Gen5::AgcAcbWriteData(reinterpret_cast<Gen5::CommandBuffer *>(&acb), 3, 0,
+                          offset, data.data(), 3, increment, 0);
+    Pm4Execution execution;
+    return processor.Process(execution, packet) == Pm4ProcessResult::Complete;
+  };
+  Require(name, "process", write(3, 0) && write(7, 1),
+          "the GDS writes did not complete");
+  scheduler.Finish();
+  std::array<uint32_t, 5> gds{};
+  Sync::ReadGds(*context.GetBufferCache().GetGdsBuffer(), gds.data(), 3, 5);
+  Require(name, "contents", gds == std::array<uint32_t, 5>{0x11u, 0x22u, 0x33u, 0, 0x33u},
+          "the GDS writes did not land at their DWORD offsets");
+  std::printf("[gpu]     %-32s ok\n", name);
+}
+
+void CheckPm4DmaDataAddress(RenderContext &renderer) {
+  constexpr const char *name = "Pm4DmaDataAddress";
+  namespace Memory = Libs::LibKernel::Memory;
+  constexpr uint64_t base = 0x0000000300030000ull;
+  constexpr uint64_t size = 0x10000;
+  // A destination whose low 32 bits are 0x3022c.
+  constexpr uint64_t destination = base + 0x22c;
+  int64_t direct_offset = -1;
+  void *mapped = reinterpret_cast<void *>(base);
+  Require(name, "map",
+          Memory::KernelAllocateDirectMemory(0, Memory::KernelGetDirectMemorySize(), size,
+                                             size, 0, &direct_offset) == 0 &&
+              Memory::KernelMapDirectMemory(&mapped, size, 0x3, 0x10, direct_offset, size) == 0 &&
+              mapped == reinterpret_cast<void *>(base),
+          "the fixed direct-memory mapping failed");
+  const std::array<uint32_t, 7> fill{KYTY_PM4(7, Pm4::IT_DMA_DATA, 0), 2u << 29u, 0x5eedu, 0,
+                                     static_cast<uint32_t>(destination),
+                                     static_cast<uint32_t>(destination >> 32u), 4};
+  CommandProcessor processor(renderer, 0);
+  Pm4Execution execution;
+  Require(name, "fill",
+          processor.Process(execution, fill) == Pm4ProcessResult::Complete &&
+              *reinterpret_cast<const uint32_t *>(destination) == 0x5eedu,
+          "the DMA fill skipped its destination");
+  Require(name, "unmap",
+          Memory::KernelMunmap(base, size) == 0 &&
+              Memory::KernelReleaseDirectMemory(direct_offset, size) == 0,
+          "the direct-memory release failed");
   std::printf("[host]    %-32s ok\n", name);
 }
 
@@ -57950,6 +58369,16 @@ int main(int argc, char **argv) {
     CheckPm4DrawIndirectMultiPacket(vulkan.RuntimeRenderer());
     return 0;
   }
+  if (argc == 2 && std::strcmp(argv[1], "--write-data-gds-only") == 0) {
+    VulkanHarness vulkan;
+    CheckPm4WriteDataGds(vulkan);
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--dma-data-only") == 0) {
+    VulkanHarness vulkan;
+    CheckPm4DmaDataAddress(vulkan.RuntimeRenderer());
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--rewind-only") == 0) {
     VulkanHarness vulkan;
     CheckPm4RewindResume(vulkan.RuntimeRenderer());
@@ -58265,6 +58694,8 @@ int main(int argc, char **argv) {
   CheckPm4LodStatsBoundTextures(vulkan, false);
   CheckPm4LodStatsBoundTextures(vulkan, true);
   CheckPm4MemSemaphore(vulkan.RuntimeRenderer());
+  CheckPm4WriteDataGds(vulkan);
+  CheckPm4DmaDataAddress(vulkan.RuntimeRenderer());
   CheckPm4RewindResume(vulkan.RuntimeRenderer());
   CheckEmbeddedFetchVertexOffset();
   CheckEmbeddedFetchLaneSpill();
@@ -58317,6 +58748,9 @@ int main(int argc, char **argv) {
   CheckComputeLdsLimit(vulkan);
   CheckTessellationWaveSizes(vulkan);
   CheckStableProgramIds(vulkan);
+  CheckComputeQueueModules(vulkan);
+  CheckGraphicsPushDataModules(vulkan);
+  CheckVertexFormatModules(vulkan);
   CheckShaderStore(vulkan);
   vulkan.CheckOrderedDispatch();
   vulkan.CheckZeroStrideBufferBinding();

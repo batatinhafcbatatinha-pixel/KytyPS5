@@ -487,22 +487,17 @@ struct PushData {
 		return mesh ? MeshDrawDwordCount : static_cast<uint32_t>(object_id);
 	}
 
-	[[nodiscard]] static constexpr bool CanFit(uint32_t start, uint32_t size,
-	                                           uint32_t ceiling = DwordCount) {
-		return size != 0 && ceiling <= DwordCount && start <= ceiling && size <= ceiling - start;
-	}
-	// Pixel and compute data start at floor, the end of what is pushed before them. Vertex
-	// pipeline stages place theirs at the top, just below ceiling (the start of the previous
-	// vertex pipeline stage's data), so their start does not depend on the pixel data size: the
-	// same vertex module serves every pixel shader it fits next to. A stage pushes its data
-	// exactly when it would bottom-up.
-	[[nodiscard]] static constexpr uint32_t StartFor(ShaderType stage, uint32_t floor,
-	                                                 uint32_t size, uint32_t ceiling = DwordCount) {
-		if (stage == ShaderType::Pixel || stage == ShaderType::Compute) {
-			return CanFit(floor, size) ? floor : NoStart;
+	// The dwords [begin, end) no stage has taken. The pixel stage takes the end, so where the
+	// other stages start does not depend on its size.
+	struct Window {
+		uint32_t begin = 0;
+		uint32_t end   = DwordCount;
+
+		[[nodiscard]] constexpr uint32_t StartFor(uint32_t size, ShaderType stage) const {
+			if (size == 0 || size > end - begin) return NoStart;
+			return stage == ShaderType::Pixel ? end - size : begin;
 		}
-		return CanFit(floor, size, ceiling) ? ceiling - size : NoStart;
-	}
+	};
 };
 
 static_assert(sizeof(PushData) == 128);
@@ -626,9 +621,12 @@ struct Bindings {
 	[[nodiscard]] bool UsesPushData() const {
 		return push_data_start_dword != PushData::NoStart;
 	}
-	void AdvancePushData(uint32_t& cursor) const {
-		if (UsesPushData()) {
-			cursor = push_data_start_dword + ShaderDataDwords();
+	void AdvancePushData(PushData::Window& window, ShaderType stage) const {
+		if (!UsesPushData()) return;
+		if (stage == ShaderType::Pixel) {
+			window.end = push_data_start_dword;
+		} else {
+			window.begin = push_data_start_dword + ShaderDataDwords();
 		}
 	}
 
@@ -693,6 +691,7 @@ struct ShaderInfo {
 	bool                            shared_int64_atomics          = false;
 	bool                            coherent_buffers              = false;
 	bool                            float64                       = false;
+	bool                            reads_queue_id                = false; // HW_ID2 QUEUE or ME.
 
 	bool operator==(const ShaderInfo& other) const = default;
 };
