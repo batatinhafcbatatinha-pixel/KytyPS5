@@ -841,9 +841,9 @@ static bool UpdateCommandBufferTypeFlags(uint64_t command_buffer, uint32_t set_b
 }
 
 static std::unordered_map<uint64_t, CommandBufferState>::iterator
-ResolveCommandBufferStateLocked(uint64_t command_buffer) {
+ResolveCommandBufferStateLocked(uint64_t command_buffer, bool prefer_backing) {
 	auto it = g_command_buffers.find(command_buffer);
-	if (it != g_command_buffers.end() && !it->second.commands.empty()) {
+	if (!prefer_backing && it != g_command_buffers.end() && !it->second.commands.empty()) {
 		return it;
 	}
 
@@ -901,14 +901,15 @@ static bool WriteCommandBufferPointers(uint64_t command_buffer, uint64_t buffer,
 	return true;
 }
 
-static bool TryGetCommandBufferState(uint64_t command_buffer, CommandBufferState* out) {
+static bool TryGetCommandBufferState(uint64_t command_buffer, CommandBufferState* out,
+                                      bool prefer_backing = false) {
 	if (out == nullptr) {
 		return false;
 	}
 
 	{
 		std::scoped_lock lock(g_command_buffer_mutex);
-		const auto       it = ResolveCommandBufferStateLocked(command_buffer);
+		const auto       it = ResolveCommandBufferStateLocked(command_buffer, prefer_backing);
 		if (it != g_command_buffers.end()) {
 			*out = it->second;
 			return true;
@@ -1310,7 +1311,7 @@ static int QueueCommandBuffer(Engine engine, uint64_t command_buffer, uint32_t b
 		return LibKernel::KERNEL_ERROR_EFAULT;
 	}
 	CommandBufferState state {};
-	if (!TryGetCommandBufferState(command_buffer, &state)) {
+	if (!TryGetCommandBufferState(command_buffer, &state, true)) {
 		return LibKernel::KERNEL_ERROR_EFAULT;
 	}
 	const uint64_t end = amm ? bytes : state.write_offset;
