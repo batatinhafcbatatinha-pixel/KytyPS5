@@ -3963,6 +3963,20 @@ void TestAmmRemapIntoPrt() {
 	        "MapAutomaticMemory");
 	*reinterpret_cast<uint64_t*>(old + page * 3) = 0x0123456789abcdefull;
 
+	// Reuse a former header address as backing storage. Submission must resolve
+	// its current owner even when the former header still has cached commands.
+	std::array<uint32_t, 16> previous_data {};
+	CheckOk(test, commands.Find<int(KYTY_SYSV_ABI*)(void*)>("8aI7R7WaOlc")(
+	                  commands.data.data()), "initialize previous header");
+	const auto set_buffer = commands.Find<int(KYTY_SYSV_ABI*)(void*, void*, uint32_t)>(
+	    "N-FSPA4S3nI");
+	CheckOk(test, set_buffer(commands.data.data(), previous_data.data(), sizeof(previous_data)),
+	        "set previous backing buffer");
+	CheckOk(test, remap(commands.data.data(), target, old, block, SceKernelProtCpuRead, all),
+	        "append previous header command");
+	CheckOk(test, set_buffer(commands.header.data(), commands.data.data(), sizeof(commands.data)),
+	        "reuse previous header as backing buffer");
+
 	std::array<uint32_t, 4> record {};
 	uint64_t                record_size = 0;
 	CheckOk(test,
