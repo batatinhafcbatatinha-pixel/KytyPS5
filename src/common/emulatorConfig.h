@@ -100,7 +100,7 @@ struct ConfigOptions {
 	bool                   tessellation_enabled        = false;
 	bool                   occlusion_queries_enabled   = false;
 	bool                   relaxed_shader_float        = false;
-	bool                   native_rt                   = false;
+	bool                   native_rt                   = true; // Off: the BVH walks stay emulated.
 	bool                   ignore_flip_rate            = false;
 	bool                   gpu_crash_diagnostics       = false;
 	bool                   lod_stats_enabled           = false;

@@ -129,7 +129,7 @@ public:
 	bool                   tessellation_enabled        = false;
 	bool                   occlusion_queries_enabled   = false;
 	bool                   relaxed_shader_float        = false;
-	bool                   native_rt                   = false;
+	bool                   native_rt                   = true;
 	bool                   shader_cache_enabled        = true;
 	bool                   trophy_enabled              = true;
 	int                    trophy_duration_seconds     = 6;
