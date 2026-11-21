@@ -73,7 +73,8 @@ static void PrintUsage() {
 	::printf("  --tessellation                      Draw tessellation patches; skipped by default.\n");
 	::printf("  --occlusion-queries                  Count occlusion query samples on the GPU.\n");
 	::printf("  --relaxed-shader-float               Native GPU float ops in shaders; faster, can be inaccurate.\n");
-	::printf("  --native-rt                          Use native RT on the GPU.\n");
+	::printf("  --native-rt                          Use native RT on the GPU (default where supported).\n");
+	::printf("  --no-native-rt                       Emulate RT in shaders instead of GPU ray queries.\n");
 	::printf("  --ignore-flip-rate                   Flip at every vblank even when the game asks for 30 or 20 fps.\n");
 	::printf("  --gpu-crash-diagnostics              On a GPU device loss, report the fault and the last\n"
 	         "                                       draws/dispatches (NVIDIA checkpoints). Slower.\n");
@@ -213,6 +214,7 @@ static constexpr Flag FLAGS[] = {
     {"--occlusion-queries", &ConfigOptions::occlusion_queries_enabled},
     {"--relaxed-shader-float", &ConfigOptions::relaxed_shader_float},
     {"--native-rt", &ConfigOptions::native_rt},
+    {"--no-native-rt", &ConfigOptions::native_rt, false},
     {"--ignore-flip-rate", &ConfigOptions::ignore_flip_rate},
     {"--gpu-crash-diagnostics", &ConfigOptions::gpu_crash_diagnostics},
     {"--lod-stats", &ConfigOptions::lod_stats_enabled},
