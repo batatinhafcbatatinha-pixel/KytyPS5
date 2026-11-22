@@ -11,16 +11,6 @@ here unchanged. This page only says what this fork changes.
 > not distribute games or copyrighted system software. Use only game files that you have obtained
 > legally.
 
-## Frame rate
-
-Measured with this fork on an RTX 3050 laptop GPU (8 GB) + Ryzen 5 3600
-
-![In-game fps](docs/fps/fps-games.svg)
-
-![In-game fps of title B: 59.6 fps at 720p, 51.3 fps with 4K output](docs/fps/fps-control.svg)
-
-**[See more games →](docs/games.md)**
-
 ## What differs from upstream
 
 The fork follows upstream `main` (merged regularly; last merge at upstream `15c8c618`). Everything it adds is about
@@ -36,7 +26,7 @@ frame rate, is on by default, and can be turned off where a switch is named.
 - **Texture descriptions are cached** instead of recomputed for every binding, and the descriptor reader avoids page
   faults on pages it just touched.
 - **`vkQueueSubmit` runs on its own thread.** Off: `KYTY_ASYNC_SUBMIT=0`.
-- **More compute work becomes plain GPU clears and copies.** Fills and whole-image copies that title B runs every
+- **More compute work becomes plain GPU clears and copies.** Fills and whole-image copies that some games run every
   frame are recognised and done as image clears and copies, without reading the data back.
 - **Read-back fixes:** GPU-written image data is kept, and downloads start as soon as their batch is submitted.
 - **Held values in game patches:** a `--game-patch` entry with `"hold": true` is written again whenever the game
