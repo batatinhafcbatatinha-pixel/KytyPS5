@@ -1186,11 +1186,18 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 		if (!DecodeColorClear(desc, code, clear.color)) {
 			continue;
 		}
-		std::vector<uint8_t> bytes(mip.size);
-		if (!LibKernel::Memory::TryReadBacking(address, bytes.data(), bytes.size())) {
-			EXIT("TextureCache: failed to read color metadata slice\n");
+		std::array<uint8_t, MetadataBlockSize> block;
+		std::array<uint8_t, MetadataBlockSize> codes;
+		codes.fill(code);
+		bool uniform = true;
+		for (uint64_t offset = 0; uniform && offset < mip.size; offset += block.size()) {
+			const auto size = std::min<uint64_t>(block.size(), mip.size - offset);
+			if (!LibKernel::Memory::TryReadBacking(address + offset, block.data(), size)) {
+				EXIT("TextureCache: failed to read color metadata slice\n");
+			}
+			uniform = std::memcmp(block.data(), codes.data(), size) == 0;
 		}
-		if (!std::all_of(bytes.begin(), bytes.end(), [code](uint8_t byte) { return byte == code; })) {
+		if (!uniform) {
 			continue;
 		}
 		{
@@ -1209,10 +1216,13 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 		// Publish the conversion's expanded keys without treating them as guest writes
 		// to overlapping image data. Invalidate the buffer before updating its backing.
 		if (desc.type != BindingType::VideoOut) {
-			std::fill(bytes.begin(), bytes.end(), uint8_t {0xff});
-			m_buffer_cache.InvalidateMemory(address, bytes.size());
-			if (!LibKernel::Memory::TryWriteBacking(address, bytes.data(), bytes.size())) {
-				m_page_manager.WriteGuest(address, bytes.data(), bytes.size());
+			block.fill(0xff);
+			m_buffer_cache.InvalidateMemory(address, mip.size);
+			for (uint64_t offset = 0; offset < mip.size; offset += block.size()) {
+				const auto size = std::min<uint64_t>(block.size(), mip.size - offset);
+				if (!LibKernel::Memory::TryWriteBacking(address + offset, block.data(), size)) {
+					m_page_manager.WriteGuest(address + offset, block.data(), size);
+				}
 			}
 		}
 	}
