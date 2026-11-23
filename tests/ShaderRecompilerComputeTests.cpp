@@ -4911,9 +4911,28 @@ public:
         release_label(label_beside_address) &&
         buffer_cache.HasGpuDirtyBytes(label_gpu_address,
                                       sizeof(label_gpu_value));
-    const bool label_over_stored =
-        release_label(label_gpu_address) &&
-        !buffer_cache.HasGpuDirtyBytes(label_gpu_address, sizeof(label_value));
+    // A label over GPU-written bytes is written in GPU order, after the write
+    // it replaces: the GPU thread knows its value at once, and guest memory
+    // holds it once those bytes are read back.
+    const bool label_over_stored = [&] {
+      gpu.Submit(make_interrupt_packet(
+          2, 0, reinterpret_cast<void *>(label_gpu_address), label_value, 0));
+      gpu.WaitForIdle();
+      uint64_t known = 0;
+      bool known_read = false;
+      gpu.SendCommandSync([&] {
+        known_read = LibKernel::Memory::ReadGpuTable(label_gpu_address, &known,
+                                                     sizeof(known));
+        buffer_cache.ReadMemory(label_gpu_address, sizeof(label_value));
+      });
+      uint64_t label = 0;
+      return known_read && known == label_value &&
+             LibKernel::Memory::TryReadBacking(label_gpu_address, &label,
+                                               sizeof(label)) &&
+             label == label_value &&
+             !buffer_cache.HasGpuDirtyBytes(label_gpu_address,
+                                            sizeof(label_value));
+    }();
     const bool label_clean_stored =
         release_label(label_clean_address) &&
         buffer_cache.IsRegionCpuModified(label_clean_address,
@@ -4924,7 +4943,7 @@ public:
             "a label downloaded the GPU-written bytes beside it");
     Require("GpuCommandLane", "RELEASE_MEM label over GPU-written bytes",
             label_over_stored,
-            "a label over GPU-written bytes left them to a later download");
+            "a label over GPU-written bytes was not known or not read back");
     Require("GpuCommandLane", "RELEASE_MEM label on a clean cached page",
             label_clean_stored,
             "a label left a clean cached copy of its page stale");

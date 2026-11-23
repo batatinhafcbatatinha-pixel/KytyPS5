@@ -823,6 +823,8 @@ if(BUILD_TESTING)
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --stream-buffer-only)
 	add_test(NAME gpu_command_lane
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --gpu-command-lane-only)
+	# Fork: its leaf-call size budget states upstream's CPU-side descriptor walk (see above).
+	set_tests_properties(gpu_command_lane PROPERTIES ENVIRONMENT "KYTY_GPU_SRT=0")
 	add_test(NAME pm4_flip
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --flip-only)
 	add_test(NAME video_out_flip_rate
