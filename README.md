@@ -51,7 +51,7 @@ belong in upstream's issue tracker; bugs that only happen here belong in this re
 ## AI use
 
 The changes of this fork were written with AI assistance (Claude models, supervised and tested by
-the fork's maintainer on the hardware named above); the commits say how each change was measured.
+the fork's maintainer); the commits say how each change was measured.
 Upstream asks that pull requests disclose AI involvement and come from a human contributor:
 nothing from this fork is sent upstream by an AI agent.
 
