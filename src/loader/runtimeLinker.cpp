@@ -657,6 +657,16 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 				Loader::X64InstructionEmulator::SkipLoad(info->native_context, length, value);
 				return true;
 			}
+			// A scalar read's word a GPU write holds: the walk resumes at the load's deferral stub
+			// and the shader loads the word itself, instead of waiting for a read-back.
+			if (length != 0) {
+				if (const auto skip = Libs::Graphics::ShaderRecompiler::IR::SrtWalkerDeferLoad(
+				        info->exception_address, info->r10);
+				    skip != 0) {
+					Loader::X64InstructionEmulator::SkipLoad(info->native_context, skip, 0);
+					return true;
+				}
+			}
 		}
 		if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
 			Common::DebugCounters::Add(Common::DebugCounters::Counter::GpuFaults);

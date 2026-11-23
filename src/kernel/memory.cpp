@@ -898,8 +898,9 @@ static uint64_t WalkerFastLoad(uint64_t vaddr) {
 	return (uint64_t {1} << 32u) | value;
 }
 
-// SRT-walker loads that only decide branches: whether the word holds a GPU write guest memory
-// lacks, in which case the walk takes both branches instead of waiting for a read-back.
+// SRT-walker loads that only decide branches or fill a scalar read's flattened slot: whether the
+// word holds a GPU write guest memory lacks, in which case the walk takes both branches, or leaves
+// the slot to the shader, instead of waiting for a read-back.
 static bool WalkerGpuPending(uint64_t vaddr) {
 	return (vaddr & 3u) == 0 && g_gpu_resources != nullptr && Graphics::GuestGpu::IsGpuThread() &&
 	       g_gpu_resources->GetBufferCache().HasPendingGpuWrite(vaddr, sizeof(uint32_t));

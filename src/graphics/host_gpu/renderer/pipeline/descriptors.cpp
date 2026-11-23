@@ -40,6 +40,7 @@
 #include <bit>
 #include <fmt/format.h>
 #include <limits>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -781,10 +782,12 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	EXIT_IF(!runtime);
 	const auto& program  = runtime.module->info;
 	const auto& snapshot = *runtime.resources;
+	// GPU-written scalar reads are loaded through device addresses too, outside bound ranges.
 	m_context.GetBufferCache().SetCurrentProgram(
 	    program.shader_hash,
 	    program.info.uses_dma ||
-	        program.bindings.descriptor_counts[static_cast<size_t>(BindingKind::BdaPagetable)] != 0);
+	        program.bindings.descriptor_counts[static_cast<size_t>(BindingKind::BdaPagetable)] != 0 ||
+	        !snapshot.gpu_scalar_words.empty());
 	prepared.runtime = &runtime;
 	prepared.gds = {nullptr, 0, VK_WHOLE_SIZE};
 	prepared.flattened_srt = {};
@@ -819,6 +822,55 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	}
 }
 
+// XXH3_64bits of the guest bytes [address, address + size) read in place through the backing
+// view, where CopySparseMemory would copy them from for a fully backed range, so the value is
+// the one-shot hash of that copy (XXH3 streams to the same result). False when a byte is not
+// backed; the caller copies then.
+static bool HashBackedBytes(uint64_t address, uint64_t size, uint64_t& hash) {
+	const auto backing_base = Libs::LibKernel::Memory::GuestBackingBase();
+	const auto backing_size = Libs::LibKernel::Memory::GuestBackingSize();
+	if (backing_base == 0 || size == 0) {
+		return false;
+	}
+	struct StateDeleter {
+		void operator()(XXH3_state_t* state) const noexcept { XXH3_freeState(state); }
+	};
+	static thread_local std::unique_ptr<XXH3_state_t, StateDeleter> state {XXH3_createState()};
+	if (state == nullptr || XXH3_64bits_reset(state.get()) == XXH_ERROR) {
+		return false;
+	}
+	// Runs of pages adjacent in the backing are hashed by one update.
+	uint64_t run_offset = 0;
+	uint64_t run_bytes  = 0;
+	for (auto at = address; at < address + size;) {
+		const auto next =
+		    std::min(address + size, Common::AlignDown(at, TRACKER_PAGE_SIZE) + TRACKER_PAGE_SIZE);
+		uint64_t offset = 0;
+		if (!Libs::LibKernel::Memory::GuestBackingOffset(at, &offset) || offset > backing_size ||
+		    next - at > backing_size - offset) {
+			return false;
+		}
+		if (run_bytes != 0 && run_offset + run_bytes == offset) {
+			run_bytes += next - at;
+		} else {
+			if (run_bytes != 0 &&
+			    XXH3_64bits_update(state.get(), reinterpret_cast<const void*>(backing_base + run_offset),
+			                       run_bytes) == XXH_ERROR) {
+				return false;
+			}
+			run_offset = offset;
+			run_bytes  = next - at;
+		}
+		at = next;
+	}
+	if (XXH3_64bits_update(state.get(), reinterpret_cast<const void*>(backing_base + run_offset),
+	                       run_bytes) == XXH_ERROR) {
+		return false;
+	}
+	hash = XXH3_64bits_digest(state.get());
+	return true;
+}
+
 // A stage that stores through V# records it selects at run time from a bound table writes any of
 // the table's buffers: each gets what a bound written buffer gets, a cache buffer holding its
 // current bytes that owns the range from here on, so the stores land in tracked memory.
@@ -845,11 +897,21 @@ static void MarkWrittenTable(RenderContext& context, const Snapshot& bound, uint
 	};
 	static thread_local std::vector<Walked> walked;
 	static thread_local std::vector<uint32_t> words;
-	words.resize(size / sizeof(uint32_t));
-	if (!Libs::LibKernel::Memory::CopySparseMemory(address, words.data(), words.size() * sizeof(uint32_t))) {
-		return;
+	const auto word_bytes = size / sizeof(uint32_t) * sizeof(uint32_t);
+	const auto copy_words = [&] {
+		words.resize(size / sizeof(uint32_t));
+		return Libs::LibKernel::Memory::CopySparseMemory(address, words.data(), word_bytes);
+	};
+	// The table is the same every dispatch most of the time: a backed one is hashed where it lies
+	// (the bytes the copy would hold) and copied only when the walk runs.
+	uint64_t   hash     = 0;
+	const bool in_place = HashBackedBytes(address, word_bytes, hash);
+	if (!in_place) {
+		if (!copy_words()) {
+			return;
+		}
+		hash = XXH3_64bits(words.data(), word_bytes);
 	}
-	const auto hash       = XXH3_64bits(words.data(), words.size() * sizeof(uint32_t));
 	const auto generation = context.MapGeneration();
 	auto       entry      = std::ranges::find_if(walked, [&](const Walked& w) {
 		return w.address == address && w.size == size && w.offset == offset && w.stride == stride;
@@ -860,6 +922,14 @@ static void MarkWrittenTable(RenderContext& context, const Snapshot& bound, uint
 			context.GetTextureCache().InvalidateMemoryFromGPU(base, bytes);
 		}
 		return;
+	}
+	if (in_place) {
+		// The walk reads a copy; its hash is the one kept, so the kept ranges are those of the
+		// bytes hashed even when the guest changed the table since the in-place hash.
+		if (!copy_words()) {
+			return;
+		}
+		hash = XXH3_64bits(words.data(), word_bytes);
 	}
 	if (entry == walked.end()) {
 		if (walked.size() >= 8) walked.erase(walked.begin());
@@ -1009,6 +1079,22 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 	const auto& snapshot = *prepared.runtime->resources;
 	const auto& layout   = program.bindings;
 
+	// Scalar-slot variant: each scalar read the walk did not wait for loads its word from the
+	// cache buffer bytes that hold it now, as a bound read of that word would. Obtained before the
+	// bindings, so a buffer this may create cannot replace one they hold.
+	std::vector<uint32_t> scalar_flat;
+	if (!snapshot.gpu_scalar_words.empty() &&
+	    layout.descriptor_counts[static_cast<size_t>(BindingKind::FlattenedSrt)] != 0) {
+		scalar_flat = snapshot.flattened_srt;
+		for (const auto& [word, address]: snapshot.gpu_scalar_words) {
+			EXIT_IF(word + 1u >= scalar_flat.size());
+			const auto [buffer, offset] =
+			    m_context.GetBufferCache().ObtainBuffer(address, sizeof(uint32_t), false);
+			const auto device       = buffer->BufferDeviceAddress() + offset;
+			scalar_flat[word]       = static_cast<uint32_t>(device);
+			scalar_flat[word + 1u]  = static_cast<uint32_t>(device >> 32u);
+		}
+	}
 	prepared.buffers.resize(layout.descriptor_counts[static_cast<size_t>(BindingKind::Buffers)]);
 	std::fill(prepared.shader_data.begin() + layout.memory_offset_dword,
 	          prepared.shader_data.end(), 0);
@@ -1029,7 +1115,8 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		    static_cast<uint32_t>(prepared.buffer_sources[index].size + buffer_offset);
 	}
 	if (layout.descriptor_counts[static_cast<size_t>(BindingKind::FlattenedSrt)] != 0) {
-		prepared.flattened_srt = NativeUpload(m_context, snapshot.flattened_srt);
+		prepared.flattened_srt =
+		    NativeUpload(m_context, scalar_flat.empty() ? snapshot.flattened_srt : scalar_flat);
 	}
 	if (layout.descriptor_counts[static_cast<size_t>(BindingKind::ShaderData)] != 0) {
 		prepared.shader_data_buffer = NativeUpload(m_context, prepared.shader_data);
