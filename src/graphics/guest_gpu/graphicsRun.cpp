@@ -151,8 +151,8 @@ void GuestGpu::SubmitFlipPreparation(uint64_t request_id) {
 void GuestGpu::SuspendPoint() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
 	// Do not hold a queue lock while waiting: asynchronous work may be needed to
-	// finish the preceding graphics frame. The first point returns immediately.
-	m_suspend_point_ready->acquire();
+	// process the preceding graphics frame. The first point returns immediately.
+	m_suspend_point_ready.acquire();
 	Submission submission;
 	submission.type = SubmissionType::SuspendPoint;
 	Enqueue(std::move(submission));
@@ -576,11 +576,11 @@ bool GuestGpu::Process(Submission& submission) {
 		case SubmissionType::SuspendPoint:
 			// Age caches at the frame boundary, not once per command list.
 			m_renderer.RunGarbageCollector();
-			// Only releases a host semaphore: no guest memory access.
-			m_renderer.GetCommandScheduler().DeferPriorityOperation(
-			    [ready = m_suspend_point_ready] { ready->release(); }, GuestRange {});
 			cp.BufferFlush();
 			cp.Reset();
+			// Like completion labels, the point has executed once the CP has submitted every
+			// packet before it, without waiting for the host GPU.
+			m_suspend_point_ready.release();
 			break;
 	}
 
