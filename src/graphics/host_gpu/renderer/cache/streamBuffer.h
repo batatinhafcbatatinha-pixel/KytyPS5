@@ -120,6 +120,8 @@ public:
 	[[nodiscard]] uint64_t                      Wraps() const noexcept { return m_wraps; }
 	[[nodiscard]] Download                      MapDownload(uint64_t size, uint64_t alignment);
 	[[nodiscard]] uint64_t Copy(const void* source, uint64_t size, uint64_t alignment = 0);
+	// Bytes the ring has moved past; a wrap skips the rest of the lap.
+	[[nodiscard]] uint64_t Position() const noexcept { return m_lap_start + m_offset; }
 
 private:
 	friend struct StreamBufferTestAccess;
@@ -136,6 +138,7 @@ private:
 	                                                uint64_t requested_upper_bound, bool allow_wait,
 	                                                size_t& wait_cursor, uint64_t& wait_bound);
 
+	uint64_t              m_lap_start   = 0;
 	uint64_t              m_offset      = 0;
 	uint64_t              m_wraps       = 0;
 	uint64_t              m_mapped_size = 0;

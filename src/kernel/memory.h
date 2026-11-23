@@ -140,6 +140,9 @@ bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size)
 bool                   TryReadBackingStrided(uint64_t first, uint64_t stride, uint32_t count,
                                              uint8_t* out);
 bool                   TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size);
+// Copies guest memory like a direct read, except that the GPU thread reads a page holding
+// GPU-written bytes through the backing, which waits only when the copied bytes are GPU-written.
+void                   ReadGuestMemory(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   CopySparseMemory(uint64_t vaddr, void* data, uint64_t size);
 // Stops at the first hole, or with span_holes at the end of the last committed range.

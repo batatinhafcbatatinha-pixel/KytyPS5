@@ -7,9 +7,9 @@
 namespace Loader::X64InstructionEmulator {
 
 [[nodiscard]] bool TryEmulate(void* native_context);
-// Completes a faulting load into EAX as a zero read and resumes after it.
-// Completes the load at rip as a read of value into EAX (zero-extended into RAX).
-void SkipLoad(void* native_context, size_t length, uint32_t value = 0);
+// Completes a faulting load into EAX with `value` (zero-extended into RAX) and resumes `length`
+// bytes after it.
+void CompleteLoad(void* native_context, size_t length, uint32_t value);
 
 } // namespace Loader::X64InstructionEmulator
 

@@ -622,7 +622,7 @@ static bool IsReadableRange(uint64_t addr, uint64_t size) {
 	return true;
 }
 
-static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exception_info) {
+bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exception_info) {
 	const auto* info = &exception_info;
 
 	if (info->type == Common::HostException::ExceptionType::IllegalInstruction &&
@@ -641,40 +641,47 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			case CoreAccess::Execute: access = GpuAccess::Execute; break;
 			case CoreAccess::Unknown: return false;
 		}
-		if (access == GpuAccess::Read) {
-			const auto length =
-			    Libs::Graphics::ShaderRecompiler::IR::SrtWalkerLoadLength(info->exception_address);
-			// Hybrid GPU-SRT: the draw runs the shader-side descriptor path instead of waiting.
-			if (length != 0 && Libs::Graphics::ShaderRecompiler::IR::WalkerSkipsGpuWritten()) {
-				Loader::X64InstructionEmulator::SkipLoad(info->native_context, length, 0);
-				Libs::Graphics::ShaderRecompiler::IR::MarkWalkerTainted();
-				return true;
-			}
-			uint32_t value = 0;
-			if (length != 0) Libs::Graphics::ShaderRecompiler::IR::SrtWalkerNoteProtectedPage(info->r10);
-			// The walker loads a DWORD from R10.
-			if (length != 0 && Libs::LibKernel::Memory::TryCurrentWalkerLoad(info->r10, &value)) {
-				Loader::X64InstructionEmulator::SkipLoad(info->native_context, length, value);
-				return true;
-			}
-			// A scalar read's word a GPU write holds: the walk resumes at the load's deferral stub
-			// and the shader loads the word itself, instead of waiting for a read-back.
-			if (length != 0) {
-				if (const auto skip = Libs::Graphics::ShaderRecompiler::IR::SrtWalkerDeferLoad(
-				        info->exception_address, info->r10);
-				    skip != 0) {
-					Loader::X64InstructionEmulator::SkipLoad(info->native_context, skip, 0);
+		if (const auto length = Libs::Graphics::ShaderRecompiler::IR::SrtWalkerLoadLength(
+		        info->exception_address)) {
+			using Libs::Graphics::ShaderRecompiler::IR::MarkWalkerTainted;
+			using Libs::Graphics::ShaderRecompiler::IR::SrtWalkerDeferLoad;
+			using Libs::Graphics::ShaderRecompiler::IR::SrtWalkerNoteProtectedPage;
+			using Libs::Graphics::ShaderRecompiler::IR::WalkerSkipsGpuWritten;
+			if (access == GpuAccess::Read) {
+				// Hybrid GPU-SRT: the draw runs the shader-side descriptor path instead of waiting.
+				if (WalkerSkipsGpuWritten()) {
+					Loader::X64InstructionEmulator::CompleteLoad(info->native_context, length, 0);
+					MarkWalkerTainted();
+					return true;
+				}
+				SrtWalkerNoteProtectedPage(info->r10);
+				// The walker loads a DWORD from R10: a command-processor value or a word no GPU write
+				// covers completes without waiting.
+				uint32_t current = 0;
+				if (Libs::LibKernel::Memory::TryCurrentWalkerLoad(info->r10, &current)) {
+					Loader::X64InstructionEmulator::CompleteLoad(info->native_context, length, current);
+					return true;
+				}
+				// A scalar read's word a GPU write holds: the walk resumes at the load's deferral
+				// stub and the shader loads the word itself, instead of waiting for a read-back.
+				if (const auto skip = SrtWalkerDeferLoad(info->exception_address, info->r10); skip != 0) {
+					Loader::X64InstructionEmulator::CompleteLoad(info->native_context, skip, 0);
 					return true;
 				}
 			}
+			// The backing serves the load, after reading back the GPU-written bytes it covers.
+			// Otherwise the load retries once its fault is handled, or reads zero.
+			uint32_t value = 0;
+			if (!Libs::LibKernel::Memory::TryReadBufferBacking(info->r10, &value, sizeof(value)) &&
+			    Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
+				Common::DebugCounters::Add(Common::DebugCounters::Counter::GpuFaults);
+				return true;
+			}
+			Loader::X64InstructionEmulator::CompleteLoad(info->native_context, length, value);
+			return true;
 		}
 		if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
 			Common::DebugCounters::Add(Common::DebugCounters::Counter::GpuFaults);
-			return true;
-		}
-		if (const auto length =
-		        Libs::Graphics::ShaderRecompiler::IR::SrtWalkerLoadLength(info->exception_address)) {
-			Loader::X64InstructionEmulator::SkipLoad(info->native_context, length);
 			return true;
 		}
 	}

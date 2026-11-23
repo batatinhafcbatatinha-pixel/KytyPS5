@@ -1173,7 +1173,7 @@ void WalkerCompiler::EmitRead(const Node& node) {
 			c.cmp(c.r11, c.rcx);
 			c.ja(zero, Near);
 		}
-		// Every guest load is mov eax, [r10] (41 8b 02), so a fault completes it as a zero read;
+		// Every guest load is mov eax, [r10] (41 8b 02), which the fault handler completes;
 		// pages that faulted recently ask the fast load first.
 		if (node.condition_only) PendingCheck(c, m_ret);
 		LoadGuest(c, c.r10, node.scalar_slot || node.reason != UINT32_MAX ? &loads : nullptr);
