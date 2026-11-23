@@ -1,5 +1,19 @@
 # KytyPS5 (performance fork)
 
+## Frame rate: this fork vs original KytyPS5
+
+| Configuration | Resolution | Original KytyPS5 | This fork | Gain |
+|---|---|---|---|---|
+| **Quality mode with ray tracing** | default | **closes when the scene loads** (emulator error) | **8.0 fps** | runs vs. does not run |
+| **Performance mode, 30 fps limit unlocked** | default | **27.2 fps** | **29.3 fps** | **+8%** |
+| **Performance mode, 60 fps limit unlocked** | 1080p (resolution patch) | **closes when the scene loads** (emulator error) | **65.2 fps** | runs vs. does not run |
+
+RTX 3050 laptop GPU + Ryzen 5 3600, 2026-11-23, one demanding title, same test scene, average over 160 s, one run per
+build and row; this fork `5384fd81` (quality row `0a1b544d`: 7.98 / 8.03 fps), original `578f2d43` (quality row
+`a0b083c8`, two runs). Unlocked = flip rate ignored and 360 Hz vblank; the original has no flip-rate switch and ran with
+the 360 Hz vblank only. The original closes with the same shader resource tracking error in both rows, with the
+resolution patch held or written once.
+
 This is a fork of [KytyPS5/KytyPS5](https://github.com/KytyPS5/KytyPS5), a free and open-source
 PlayStation 5 translation layer written in C++ for Windows and Linux, with experimental macOS
 support. Everything about the project itself (status, compatibility list, building, running,
@@ -13,7 +27,7 @@ here unchanged. This page only says what this fork changes.
 
 ## What differs from upstream
 
-The fork follows upstream `main` (merged regularly; last merge at upstream `15c8c618`). Everything it adds is about
+The fork follows upstream `main` (merged regularly; last merge at upstream `578f2d43`). Everything it adds is about
 frame rate, is on by default, and can be turned off where a switch is named.
 
 - **Compute work runs ahead on a second GPU queue.** Programs whose results are read back later run early, so the
