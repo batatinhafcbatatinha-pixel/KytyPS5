@@ -797,7 +797,8 @@ void DefineModule(EmitterState& state) {
 	}
 	const bool physical_addresses =
 	    state.program.info.uses_dma || state.program.info.uses_image_heap ||
-	    state.program.info.uses_device_address || state.program.info.ray_query;
+	    state.program.info.uses_device_address || state.program.info.ray_query ||
+	    (state.program.info.uses_dispatch_threads && DispatchExtentByAddress(state));
 	if (physical_addresses) {
 		state.builder.RequireCapability(spv::CapabilityInt64);
 		state.builder.RequireCapability(spv::CapabilityPhysicalStorageBufferAddresses);

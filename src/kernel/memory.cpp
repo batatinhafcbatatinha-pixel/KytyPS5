@@ -865,6 +865,14 @@ uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size, bool span_holes) {
 	return clamped_size;
 }
 
+uint64_t TryClampRangeSize(uint64_t vaddr, uint64_t size, bool span_holes) {
+	if (size <= (uint64_t {1} << 24u) && g_guest_address_space->IsBacked(vaddr, size)) {
+		return size;
+	}
+	std::shared_lock state(g_memory_state_mutex);
+	return g_virtual_ranges->ClampRangeSize(vaddr, size, span_holes);
+}
+
 void WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept {
 	if (!TryWriteBacking(vaddr, data, size)) {
 		EXIT("Memory: required direct-backing write failed, addr=0x%016" PRIx64
@@ -890,10 +898,18 @@ static uint64_t WalkerFastLoad(uint64_t vaddr) {
 	return (uint64_t {1} << 32u) | value;
 }
 
+// SRT-walker loads that only decide branches: whether the word holds a GPU write guest memory
+// lacks, in which case the walk takes both branches instead of waiting for a read-back.
+static bool WalkerGpuPending(uint64_t vaddr) {
+	return (vaddr & 3u) == 0 && g_gpu_resources != nullptr && Graphics::GuestGpu::IsGpuThread() &&
+	       g_gpu_resources->GetBufferCache().HasPendingGpuWrite(vaddr, sizeof(uint32_t));
+}
+
 void InstallGpuResources(Graphics::RenderContext* resources) noexcept {
 	EXIT_IF(resources != nullptr && g_gpu_resources != nullptr);
 	g_gpu_resources = resources;
 	Graphics::ShaderRecompiler::IR::SetWalkerFastLoad(resources != nullptr ? &WalkerFastLoad : nullptr);
+	Graphics::ShaderRecompiler::IR::SetWalkerGpuPending(resources != nullptr ? &WalkerGpuPending : nullptr);
 }
 
 bool ReadGpuTable(uint64_t vaddr, void* data, uint64_t size) {

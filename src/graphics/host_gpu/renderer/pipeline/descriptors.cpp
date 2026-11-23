@@ -944,8 +944,9 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 				continue;
 			}
 			// A base outside guest memory is a stale descriptor the shader does not reach on this
-			// path (one title binds such a record): it binds as null, like a zero base.
-			if (!GuestRange {address, 1}.Valid()) {
+			// path (one title binds such a record): it binds as null, like a zero base. So does a
+			// range no buffer can cover, which a branch the walk did not decide may bind.
+			const auto outside = [&] {
 				static std::atomic<uint32_t> reported {0};
 				if (reported.fetch_add(1, std::memory_order_relaxed) < 4) {
 					std::printf("Buffer descriptor outside guest memory bound as null: 0x%016" PRIx64
@@ -953,6 +954,15 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 					            address, size);
 				}
 				source = {};
+			};
+			// ClampRangeSize, or 0 for a base outside committed memory.
+			const auto clamp = [&](uint64_t bytes, bool span_holes) {
+				return Libs::LibKernel::Memory::TryClampRangeSize(address, bytes, span_holes) != 0
+				           ? Libs::LibKernel::Memory::ClampRangeSize(address, bytes, span_holes)
+				           : uint64_t {0};
+			};
+			if (!GuestRange {address, 1}.Valid()) {
+				outside();
 				continue;
 			}
 			if (descriptor.NumRecords() == UINT32_MAX) {
@@ -974,13 +984,16 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 				const auto  limit =
 				    uint64_t {graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange} -
 				    (graphics.StorageMinAlignment() - 1);
-				size = Libs::LibKernel::Memory::ClampRangeSize(
-				    address, std::min({size, uint64_t {256} * 1024 * 1024, limit}));
+				size = clamp(std::min({size, uint64_t {256} * 1024 * 1024, limit}), false);
 			} else if (size >= (uint64_t {1} << 30u)) {
 				//  PPSA18026
 				// Finite descriptors can span sparse PRT holes; oversized pool windows are mapped
 				// in pieces, so they end at their last committed range.
-				size = Libs::LibKernel::Memory::ClampRangeSize(address, size, true);
+				size = clamp(size, true);
+			}
+			if (!GuestRange {address, size}.Valid()) {
+				outside();
+				continue;
 			}
 			source = {address, size, cache.FindBuffer(address, size)};
 		}

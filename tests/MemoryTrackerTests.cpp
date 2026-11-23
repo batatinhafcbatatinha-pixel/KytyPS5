@@ -305,6 +305,91 @@ void TestRangeSet() {
         "range set subtraction did not preserve both exact tails");
 }
 
+// RangeSet::Extract reports what ForEachInRange does and removes it like Subtract; a range
+// added again after a removal is not taken for present.
+void TestRangeSetExtractAndReAdd() {
+  RangeSet ranges;
+  ranges.Add(0x1000, 0x100);
+  ranges.Add(0x1000, 0x100);
+  ranges.Add(0x1300, 0x100);
+  std::vector<std::pair<uint64_t, uint64_t>> pieces;
+  ranges.Extract(0x1080, 0x300, [&](uint64_t start, uint64_t end) {
+    pieces.emplace_back(start, end);
+  });
+  Check(pieces.size() == 2 && pieces[0].first == 0x1080 &&
+            pieces[0].second == 0x1100 && pieces[1].first == 0x1300 &&
+            pieces[1].second == 0x1380,
+        "range set extract did not report the clipped ranges");
+  Check(ranges.Contains(0x1000, 0x80) && !ranges.Intersects(0x1080, 0x300) &&
+            ranges.Contains(0x1380, 0x80),
+        "range set extract did not keep both tails");
+  ranges.Subtract(0x1000, 0x80);
+  Check(!ranges.Intersects(0x1000, 0x80), "range set subtract kept a range");
+  ranges.Add(0x1000, 0x40);
+  Check(ranges.Contains(0x1000, 0x40) && !ranges.Intersects(0x1040, 0x40),
+        "range set re-add after a removal was skipped or grew");
+  RangeSet moved = std::move(ranges);
+  ranges.Add(0x1000, 0x40);
+  Check(ranges.Contains(0x1000, 0x40) && moved.Contains(0x1380, 0x80),
+        "range set add after a move was skipped");
+}
+
+// ForEachUploadRangeBatch reports each range's CPU-dirty pages as separate ForEachUploadRange
+// calls do (a shared page once), and re-watches the pages of one region in one protection
+// call when the pages between them are watched already.
+void TestBatchedUploadProtection() {
+  constexpr auto page_size = Libs::Graphics::TRACKER_PAGE_SIZE;
+  Libs::Graphics::g_sticky_pages.store(false);
+  {
+    TrackerHarness harness;
+    auto &tracker = harness.tracker;
+    auto *memory = Allocate(8);
+    const auto address = reinterpret_cast<uint64_t>(memory);
+    tracker.ForEachUploadRange(
+        address, page_size * 8, false, [](uint64_t, uint64_t) noexcept {},
+        []() noexcept {});
+    tracker.InvalidateRegion(address + page_size, 8, [] {});
+    tracker.InvalidateRegion(address + page_size * 5, 8, [] {});
+    std::vector<std::pair<size_t, uint64_t>> reported;
+    const auto record = [&](size_t index, uint64_t at, uint64_t bytes) noexcept {
+      Check(bytes == page_size, "batched upload reported more than one page");
+      reported.emplace_back(index, at);
+    };
+    const GuestRange sparse[] = {{address + page_size, page_size},
+                                 {address + page_size * 5, page_size}};
+    ResetProtectionLog();
+    tracker.ForEachUploadRangeBatch(sparse, record);
+    Check(reported.size() == 2 && reported[0].first == 0 &&
+              reported[0].second == address + page_size && reported[1].first == 1 &&
+              reported[1].second == address + page_size * 5,
+          "batched upload did not report each range's dirty page");
+    Check(g_protection_calls == 1 && g_protection_log[0].address == address + page_size &&
+              g_protection_log[0].size == page_size * 5 &&
+              g_protection_log[0].mode == Common::VirtualMemory::Mode::Read &&
+              !tracker.IsRegionCpuModified(address, page_size * 8) &&
+              Protection(memory + page_size) == PAGE_READONLY &&
+              Protection(memory + page_size * 5) == PAGE_READONLY,
+          "batched upload did not re-watch a region in one protection call");
+
+    tracker.InvalidateRegion(address + page_size * 3, 8, [] {});
+    const GuestRange shared[] = {{address + page_size * 3, 16},
+                                 {address + page_size * 3 + 16, 16}};
+    reported.clear();
+    tracker.ForEachUploadRangeBatch(shared, record);
+    Check(reported.size() == 1 && reported[0].first == 0 &&
+              reported[0].second == address + page_size * 3,
+          "batched upload reported a shared page twice");
+    reported.clear();
+    ResetProtectionLog();
+    tracker.ForEachUploadRangeBatch(sparse, record);
+    Check(reported.empty() && g_protection_calls == 0,
+          "clean batched upload reported or protected pages");
+    tracker.MarkRegionAsCpuModified(address, page_size * 8);
+    Release(memory);
+  }
+  Libs::Graphics::g_sticky_pages.store(true);
+}
+
 void TestGuestRange() {
   constexpr GuestRange empty{};
   constexpr GuestRange first_byte{1, 1};
@@ -1352,6 +1437,7 @@ int main(int argc, char **argv) {
   }
   TestGuestRange();
   TestRangeSet();
+  TestRangeSetExtractAndReAdd();
   TestQueriesDoNotRequireMappedOwnership();
   TestConcurrentRegionPublication();
   TestCpuDirtyUpload();
@@ -1370,6 +1456,7 @@ int main(int argc, char **argv) {
   TestDownloadDoesNotSerializeDisjointRegion();
   TestGpuUnmarkUsesRegionMask();
   TestFullRegionGpuUnmarkBatching();
+  TestBatchedUploadProtection();
   TestFatalPaths();
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
   TestFaultOnProtectedStack();

@@ -912,7 +912,13 @@ void CommandProcessor::ProcessPssr(const Pssr::Request& request) {
 
 void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 	EXIT_NOT_IMPLEMENTED(args_addr == 0 || (args_addr & 3u) != 0);
-	if ((mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0) {
+	constexpr uint32_t ORDERED_APPEND_ENABLE = 1u << 3u;
+	// Thread counts a GPU write the host lacks covers stay on the GPU: the executor derives the
+	// groups and the program's extents there. Ordered append splits the dispatch per group on the
+	// host, so it keeps reading them.
+	if ((mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0 &&
+	    ((mode & ORDERED_APPEND_ENABLE) != 0 ||
+	     !m_renderer.GetBufferCache().HasPendingGpuWrite(args_addr, sizeof(vk::DispatchIndirectCommand)))) {
 		// The arguments may be GPU-written: read them through the cache, not guest memory.
 		vk::DispatchIndirectCommand args {};
 		if (!m_renderer.GetBufferCache().ReadTable(args_addr, sizeof(args), &args)) {
