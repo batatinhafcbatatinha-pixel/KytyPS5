@@ -499,6 +499,8 @@ void CommandScheduler::BeginSide() {
 
 uint64_t CommandScheduler::SubmitSide() {
 	EXIT_IF(!m_in_side);
+	// Page protections and upload bytes recorded work defers are in place before it can run.
+	m_context.GetBufferCache().FlushDeferredTracking();
 	m_command.End();
 	const auto buffer = m_command.m_buffer;
 	m_command.m_buffer = m_main_buffer;
@@ -538,6 +540,8 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	}
 	EXIT_IF(m_command.IsInvalid());
 
+	// Page protections and upload bytes recorded work defers are in place before it can run.
+	m_context.GetBufferCache().FlushDeferredTracking();
 	m_command.End();
 	const auto buffer   = m_command.m_buffer;
 	auto&      graphics = m_graphics;

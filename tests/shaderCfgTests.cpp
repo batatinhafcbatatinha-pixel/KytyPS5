@@ -13212,6 +13212,64 @@ void TestSpirvConditionVotes() {
   }
 }
 
+// A one-wave wave64 workgroup on 32-wide subgroups, with the profile's wave split: one invocation
+// per guest lane (64), one copy of the code, and the cross-half reads through barriers.
+void TestSpirvWaveSplit() {
+  using namespace ShaderRecompiler;
+  using K = CFG::BranchCondition;
+  for (const uint32_t threads : {64u, 128u}) {
+    const uint32_t shader[] = {EncodeSopp(0x01)};
+    ShaderComputeInputInfo compute{};
+    compute.wave_size = 64;
+    compute.host_subgroup_size = 32;
+    compute.threads_num[0] = threads;
+    compute.threads_num[1] = compute.threads_num[2] = 1;
+    auto options = MakeCompileOptions(ShaderType::Compute);
+    options.wave_size = 64;
+    options.input_info.compute = &compute;
+    auto compiled = RecompileForTest(shader, options);
+    IR::IREmitter emitter(compiled.program.blocks.front());
+    const auto lane = emitter.Emit(IR::ValueOpcode::LaneId, {});
+    const auto odd = emitter.Emit(IR::ValueOpcode::IEqual32, {lane, IR::Value(33u)});
+    const std::array values{
+        emitter.Emit(IR::ValueOpcode::ReadFirstLane, {lane, odd}),
+        emitter.Emit(IR::ValueOpcode::ReadLane, {lane, IR::Value(40u)}),
+        emitter.Emit(IR::ValueOpcode::Ballot, {odd}),
+        emitter.Emit(IR::ValueOpcode::ConditionRef, {odd}, K::ExecNonZero),
+        emitter.Emit(IR::ValueOpcode::SubgroupReduceU32, {lane}, IR::ValueOpcode::IAdd32)};
+    for (const auto &value : values) emitter.Emit(IR::ValueOpcode::Reference, {value});
+    compiled.program.shader_info_complete = false;
+    IR::CollectShaderInfo(compiled.program, options.input_info);
+    const auto pair = Spirv::EmitProgram(compiled.program, options.input_info);
+    CheckSpirvBinaryValidates(pair);
+    static constexpr Spirv::Profile split_profile{.wave_split = true};
+    const auto split = Spirv::EmitProgram(compiled.program, options.input_info, {}, split_profile);
+    CheckSpirvBinaryValidates(split);
+    const auto text = DisassembleSpirvBinary(split);
+    if (threads > 64u) {
+      Check(split == pair && text.find("BuiltIn SubgroupId") == std::string::npos,
+            "a workgroup of two waves was split");
+      continue;
+    }
+    Check(text.find("LocalSize 64 1 1") != std::string::npos &&
+              text.find("BuiltIn SubgroupId") != std::string::npos &&
+              DisassembleSpirvBinary(pair).find("LocalSize 32 1 1") != std::string::npos,
+          "the split wave did not run one invocation per guest lane");
+    // Ballot, ReadLane, branch vote and reduction take one exchange each, ReadFirstLane one for
+    // its EXEC words and value together; the translation's EXEC ballots may add more.
+    Check(SpirvInstructionOpcodeCount(split, spv::OpControlBarrier) >= 5u,
+          "the split wave exchanged values without barriers");
+    Check(std::ranges::all_of(values,
+                              [](const auto &value) {
+                                return value.TryInstruction()->Definition(1) == 0;
+                              }),
+          "the split wave emitted a second half");
+    Check(Spirv::EmitProgram(compiled.program, options.input_info, {}, split_profile) == split &&
+              Spirv::EmitProgram(compiled.program, options.input_info) == pair,
+          "split and paired re-emission did not reset their definitions");
+  }
+}
+
 void TestRepeatedExportsHaveOneInterface() {
   const uint32_t shader[] = {EncodeExp0(0x0c, 0xf), EncodeExp1(0, 1, 2, 3),
                              EncodeExp0(0x0c, 0xf), EncodeExp1(0, 1, 2, 3),
@@ -13553,6 +13611,7 @@ int main() {
   TestCompilerStageInputOwnership();
   TestSpirvRepeatedEmission();
   TestSpirvConditionVotes();
+  TestSpirvWaveSplit();
   TestRepeatedExportsHaveOneInterface();
   TestNewShaderRecompilerSpirvSizeBaselines();
   TestDemandDrivenSpirvDeclarations();

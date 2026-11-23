@@ -132,6 +132,8 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 		     vaddr, size);
 	}
 	const auto unmap = [this, vaddr, size] {
+		// Deferred upload bytes are read from guest memory: before it is unmapped.
+		m_buffer_cache.FlushDeferredTracking();
 		// Check cache ownership on the GPU thread. Guest-memory callbacks can still
 		// access a range with no cached data, so those that may touch it must finish before it
 		// is unmapped. Host-only callbacks (flips, interrupts) do not force a drain.

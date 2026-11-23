@@ -469,6 +469,63 @@ void TestBatchedUploadProtection() {
   Libs::Graphics::g_sticky_pages.store(true);
 }
 
+// Deferred protection: a batched upload's re-watch and a GPU-modified mark change
+// the watcher counts at once and the OS protection at the flush, in one call
+// for pages between them that already have the protection.
+void TestDeferredProtection() {
+  constexpr auto page_size = Libs::Graphics::TRACKER_PAGE_SIZE;
+  Libs::Graphics::g_sticky_pages.store(false);
+  Libs::Graphics::g_deferred_protection.store(true);
+  {
+    TrackerHarness harness;
+    auto &tracker = harness.tracker;
+    auto *memory = Allocate(8);
+    const auto address = reinterpret_cast<uint64_t>(memory);
+    tracker.ForEachUploadRange(
+        address, page_size * 8, false, [](uint64_t, uint64_t) noexcept {},
+        []() noexcept {});
+    tracker.InvalidateRegion(address + page_size, 8, [] {});
+    tracker.InvalidateRegion(address + page_size * 3, 8, [] {});
+    uint32_t reported = 0;
+    const GuestRange sparse[] = {{address + page_size, page_size},
+                                 {address + page_size * 3, page_size}};
+    ResetProtectionLog();
+    tracker.ForEachUploadRangeBatch(
+        sparse, [&](size_t, uint64_t, uint64_t) noexcept { reported++; }, true);
+    Check(reported == 2 && g_protection_calls == 0 &&
+              !tracker.IsRegionCpuModified(address, page_size * 8) &&
+              Protection(memory + page_size) == PAGE_READWRITE &&
+              tracker.Pages().HasDeferred(),
+          "deferred batched upload changed protection at once");
+    tracker.Pages().FlushDeferred();
+    Check(g_protection_calls == 1 && g_protection_log[0].address == address + page_size &&
+              g_protection_log[0].size == page_size * 3 &&
+              g_protection_log[0].mode == Common::VirtualMemory::Mode::Read &&
+              Protection(memory + page_size) == PAGE_READONLY &&
+              Protection(memory + page_size * 3) == PAGE_READONLY &&
+              !tracker.Pages().HasDeferred(),
+          "deferred flush did not watch the pages in one call");
+
+    ResetProtectionLog();
+    MarkGpuModified(tracker, address + page_size * 5, page_size);
+    Check(tracker.IsRegionGpuModified(address + page_size * 5, page_size) &&
+              g_protection_calls == 0 && Protection(memory + page_size * 5) == PAGE_READONLY,
+          "a GPU-modified mark protected its page at once");
+    tracker.Pages().FlushDeferred();
+    Check(Protection(memory + page_size * 5) == PAGE_NOACCESS,
+          "deferred flush did not protect a GPU-modified page");
+    tracker.Pages().FlushDeferred();
+
+    tracker.UnmarkRegionAsGpuModified(address, page_size * 8);
+    Check(Protection(memory + page_size * 5) == PAGE_READONLY,
+          "GPU unmark after a deferred mark left the page protected");
+    tracker.MarkRegionAsCpuModified(address, page_size * 8);
+    Release(memory);
+  }
+  Libs::Graphics::g_deferred_protection.store(false);
+  Libs::Graphics::g_sticky_pages.store(true);
+}
+
 void TestGuestRange() {
   constexpr GuestRange empty{};
   constexpr GuestRange first_byte{1, 1};
@@ -1757,6 +1814,7 @@ int main(int argc, char **argv) {
   TestFullRegionGpuUnmarkBatching();
   TestBatchedGpuUnmark();
   TestBatchedUploadProtection();
+  TestDeferredProtection();
   TestFatalPaths();
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
   TestFaultOnProtectedStack();
