@@ -994,11 +994,10 @@ void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 	if ((mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0 &&
 	    ((mode & ORDERED_APPEND_ENABLE) != 0 ||
 	     !m_renderer.GetBufferCache().HasPendingGpuWrite(args_addr, sizeof(vk::DispatchIndirectCommand)))) {
-		// The arguments may be GPU-written: read them through the cache, not guest memory.
+		// The arguments may be GPU-written: the reader takes them by byte ownership (cache table
+		// reader, or guest memory when an image write-back owns the bytes).
 		vk::DispatchIndirectCommand args {};
-		if (!m_renderer.GetBufferCache().ReadTable(args_addr, sizeof(args), &args)) {
-			EXIT("dispatch arguments at 0x%016" PRIx64 " are not readable\n", args_addr);
-		}
+		LibKernel::Memory::ReadGuestMemory(args_addr, &args, sizeof(args));
 		DispatchDirect(args.x, args.y, args.z, mode);
 		return;
 	}

@@ -528,7 +528,6 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	struct TextureDescEntry {
 		TextureDescKey          key;
 		TextureCache::ImageDesc desc;
-		bool                    shader_conversion = false;
 		vk::Format              pixel_format {};
 		vk::Format              view_format {};
 		Prospero::BufferFormat  format {};
@@ -543,8 +542,8 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		memo_hash = XXH3_64bits(&memo_key, sizeof(memo_key));
 		if (const auto hit = desc_memo.find(memo_hash); hit != desc_memo.end() && hit->second.key == memo_key) {
 			auto desc = hit->second.desc;
-			return FinishTexture(resource, descriptor, std::move(desc), hit->second.shader_conversion,
-			                     hit->second.pixel_format, hit->second.view_format, hit->second.format);
+			return FinishTexture(resource, descriptor, std::move(desc), hit->second.pixel_format,
+			                     hit->second.view_format, hit->second.format);
 		}
 	}
 
@@ -592,8 +591,6 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	                                ? Prospero::BufferFormat::k16UNorm
 	                                : descriptor.Format();
 	const auto surface_format = TextureGetSurfaceFormatInfo(format);
-	const bool shader_conversion =
-	    surface_format.conversion_format != Prospero::BufferFormat::kInvalid;
 	const bool sampled_numeric_class =
 	    storage || resource.numeric_class ==
 	                   Prospero::SampledTextureNumericClass(Prospero::RemapTextureFormat(format));
@@ -616,7 +613,8 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	auto          view_base    = static_cast<uint32_t>(base_level);
 	auto pixel_format = surface_format.vk_format;
 	if (resource.depth_compare) {
-		if (const auto* depth_format = FindGuestDepthFormatPolicy(format)) {
+		if (const auto* depth_format = FindGuestDepthFormatPolicy(format);
+		    depth_format && depth_format->depth_attachment_format != vk::Format::eUndefined) {
 			pixel_format = depth_format->depth_attachment_format;
 		}
 	}
@@ -684,20 +682,18 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	desc.heap = resource.heap;
 	if (memo_usable) {
 		if (desc_memo.size() > 8192) desc_memo.clear();
-		desc_memo[memo_hash] = {memo_key, desc, shader_conversion, pixel_format, view_format, format};
+		desc_memo[memo_hash] = {memo_key, desc, pixel_format, view_format, format};
 	}
-	return FinishTexture(resource, descriptor, std::move(desc), shader_conversion, pixel_format, view_format,
-	                     format);
+	return FinishTexture(resource, descriptor, std::move(desc), pixel_format, view_format, format);
 }
 
 TextureBinding RenderExecutor::FinishTexture(const ShaderRecompiler::IR::ImageResource& resource,
                                              const ShaderTextureResource& descriptor,
-                                             TextureCache::ImageDesc desc, bool shader_conversion,
-                                             vk::Format pixel_format, vk::Format view_format,
-                                             Prospero::BufferFormat format) {
+                                             TextureCache::ImageDesc desc, vk::Format pixel_format,
+                                             vk::Format view_format, Prospero::BufferFormat format) {
 	auto&      texture_cache = m_context.GetTextureCache();
 	const bool storage       = resource.written;
-	auto       id            = texture_cache.FindImage(desc, shader_conversion);
+	auto       id            = texture_cache.FindImage(desc);
 	if (!id) {
 		// Another extent at the address holds it; the heap retries once an image is created.
 		return {.desc = std::move(desc), .layout = vk::ImageLayout::eGeneral};

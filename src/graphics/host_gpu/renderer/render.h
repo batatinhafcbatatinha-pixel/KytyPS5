@@ -161,7 +161,7 @@ public:
 	                                            const ShaderRecompiler::IR::DescriptorValue& value);
 	[[nodiscard]] TextureBinding FinishTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	                                           const ShaderTextureResource& descriptor,
-	                                           TextureCache::ImageDesc desc, bool shader_conversion,
+	                                           TextureCache::ImageDesc desc,
 	                                           vk::Format pixel_format, vk::Format view_format,
 	                                           Prospero::BufferFormat format);
 
